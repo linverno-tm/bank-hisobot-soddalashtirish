@@ -1,0 +1,11 @@
+__pycache__/
+build/
+*.spec
+*.exe
+*.zip
+persist_dictionary.json
+*.xlsx
+*_tekshirish.txt
+check_report.txt
+check_list1.txt
+error_log.txt

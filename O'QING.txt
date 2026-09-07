@@ -1,0 +1,23 @@
+Bank hisobotini soddalashtirish — desktop ilova
+=================================================
+
+Ishlatilishi:
+1. "BankHisobotSoddalashtirish.exe" faylini ikki marta bosib oching.
+2. "Fayllarni tanlash..." tugmasi orqali bir nechta xom Hamkorbank
+   Client-Bank hisobot faylini (.xlsx) belgilang (30 tagacha birdan
+   bo'lishi mumkin).
+3. "Saqlash papkasi" qatorida "Tanlash..." tugmasi bilan natijalar
+   qayerga yozilishini ko'rsating.
+4. "Boshlash" tugmasini bosing.
+   - Agar tizim tanimagan (nomlanmagan) kontragent uchrasa, ekranga
+     oyna chiqadi va har biri uchun kategoriya nomini so'raydi. Bir
+     marta kiritilgan nom keyingi barcha fayllar/loyihalar uchun
+     avtomatik eslab qolinadi (persist_dictionary.json faylida).
+5. Har bir tanlangan fayl ALOHIDA natija faylga aylantiriladi (masalan
+   "AB M Avgust - soddalashtirilgan.xlsx") + shu faylga mos
+   "_tekshirish.txt" ro'yxati (past ishonch bilan belgilangan qatorlar).
+6. Jarayon tugagach ro'yxatda har bir faylning holati (Tayyor/Xato)
+   va pastdagi jurnalda batafsil ma'lumot ko'rinadi.
+
+Muhim: "persist_dictionary.json" faylini .exe bilan bitta papkada
+saqlang — bu o'rganilgan kategoriyalar bazasi, uni o'chirmang.
