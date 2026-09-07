@@ -73,6 +73,7 @@ class UnresolvedDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Nomlanmagan kontragentlar topildi")
         self.geometry("760x520")
+        self.minsize(600, 420)
         self.transient(parent)
         self.grab_set()
         self.result_entries = {}  # key -> (info, tk.StringVar)
@@ -161,6 +162,7 @@ class GroupsManagerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Guruhlarni boshqarish")
         self.geometry("720x560")
+        self.minsize(600, 420)
         self.transient(parent)
         self.grab_set()
 
@@ -321,6 +323,7 @@ class CounterpartyPickerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Fayldan kontragent tanlash")
         self.geometry("860x560")
+        self.minsize(680, 420)
         self.transient(parent)
         self.grab_set()
         self.applied = False
@@ -477,8 +480,9 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Bank hisobotini soddalashtirish")
+        self._apply_dpi_scaling()
         self.geometry("960x680")
-        self.minsize(820, 560)
+        self.minsize(860, 580)
 
         sv_ttk.set_theme("light")
         self._setup_fonts()
@@ -493,6 +497,20 @@ class App(tk.Tk):
         self.after(1500, self._check_update_background)
 
     # ---------------------------------------------------------- UI layout
+    def _apply_dpi_scaling(self):
+        """_enable_dpi_awareness() Windows'ga haqiqiy piksel o'lchamlarini
+        ko'rsatishga majbur qiladi; shu real DPI qiymatiga qarab Tk'ning
+        ichki masshtabini (scaling) moslaymiz — aks holda widget'lar
+        yuqori-DPI monitorlarda juda mayda yoki noto'g'ri o'lchamda
+        chizilib, oyna o'lchami o'zgarganda joylashuv buzilib qolishi
+        mumkin edi."""
+        try:
+            dpi = self.winfo_fpixels("1i")
+            if dpi > 0:
+                self.tk.call("tk", "scaling", dpi / 72.0)
+        except Exception:
+            pass
+
     def _setup_fonts(self):
         base = tkfont.nametofont("TkDefaultFont")
         base.configure(family="Segoe UI", size=10)
@@ -501,6 +519,14 @@ class App(tk.Tk):
         self.subtitle_font = tkfont.Font(family="Segoe UI", size=10)
         self.step_font = tkfont.Font(family="Segoe UI Semibold", size=11)
         self.mono_font = tkfont.Font(family="Consolas", size=9)
+
+    def _on_root_resize(self, event):
+        # Tavsif matni oyna torayganda so'zma-so'z pastga tushib
+        # ("wrap" bo'lib) yozilsin — bitta uzun qatorda kesilib qolmasin.
+        try:
+            self.subtitle_label.configure(wraplength=max(300, event.width - 28))
+        except Exception:
+            pass
 
     def _step_frame(self, parent, title):
         """A labeled 'card' section used to break the workflow into clear,
@@ -517,19 +543,24 @@ class App(tk.Tk):
         header.pack(fill="x", pady=(0, 14))
         title_row = ttk.Frame(header)
         title_row.pack(fill="x")
-        ttk.Label(title_row, text="Bank hisobotini soddalashtirish", font=self.heading_font).pack(side="left")
+        title_row.columnconfigure(0, weight=1)
+        title_group = ttk.Frame(title_row)
+        title_group.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_group, text="Bank hisobotini soddalashtirish", font=self.heading_font).pack(side="left")
         ttk.Label(
-            title_row, text=f"  v{updater.APP_VERSION}", font=self.subtitle_font, foreground="#999999"
+            title_group, text=f"  v{updater.APP_VERSION}", font=self.subtitle_font, foreground="#999999"
         ).pack(side="left", anchor="s", pady=(0, 3))
         ttk.Button(
             title_row, text="🔄 Yangilanishni tekshirish", command=self._check_update_manual
-        ).pack(side="right")
-        ttk.Label(
+        ).grid(row=0, column=1, sticky="e", padx=(10, 0))
+        self.subtitle_label = ttk.Label(
             header,
             text="Xom Hamkorbank hisobotlarini tanlang — har biri alohida Excel faylga aylantiriladi.",
             font=self.subtitle_font,
             foreground="#666666",
-        ).pack(anchor="w")
+        )
+        self.subtitle_label.pack(anchor="w")
+        root.bind("<Configure>", self._on_root_resize)
 
         step1 = self._step_frame(root, "1-qadam · Fayllarni tanlang")
         step1.pack(fill="x", pady=(0, 10))
@@ -559,8 +590,8 @@ class App(tk.Tk):
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended", height=10)
         self.tree.heading("file", text="Fayl")
         self.tree.heading("status", text="Holati")
-        self.tree.column("file", width=600, anchor="w")
-        self.tree.column("status", width=180, anchor="w")
+        self.tree.column("file", width=600, anchor="w", stretch=True)
+        self.tree.column("status", width=160, anchor="w", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
@@ -895,7 +926,26 @@ class App(tk.Tk):
         self.after(100, self._poll_queue)
 
 
+def _enable_dpi_awareness():
+    """Windows monitor masshtabi (125%, 150% va h.k.) turli bo'lganda yoki
+    oyna boshqa monitorga ko'chirilganda/kattalashtirilganda elementlar
+    joyidan siljib, ustma-ust tushib qolishining asosiy sababi — dastur
+    Windows'ga "men DPI-ga moslashaman" deb aytmagani. Shuni tuzatamiz;
+    muvaffaqiyatsiz bo'lsa (masalan eski Windows yoki boshqa OS) jim
+    tarzda o'tkazib yuboriladi — ilova baribir ishlayveradi."""
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        try:
+            from ctypes import windll
+            windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main():
+    _enable_dpi_awareness()
     os.chdir(APP_DIR)
     app = App()
     app.mainloop()
