@@ -106,7 +106,9 @@ class UnresolvedDialog(tk.Toplevel):
             label_bits = []
             if info["name"]:
                 label_bits.append(info["name"])
-            if info["inn"]:
+            if info.get("account"):
+                label_bits.append(f"Xisob raqam {info['account']}")
+            elif info.get("inn"):
                 label_bits.append(f"ИНН {info['inn']}")
             label_bits.append(f"{info['count']} qatorda uchraydi")
             ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold")).pack(anchor="w")
@@ -136,12 +138,14 @@ class UnresolvedDialog(tk.Toplevel):
         self.destroy()
 
     def get_assignments(self):
-        """Returns list of (inn, name, category) for entries the user filled in."""
+        """Returns list of (identifier, name, category) for entries the user
+        filled in. `identifier` is the counterparty's Xisob raqam (Счет)
+        when known, otherwise empty (name-based matching is used instead)."""
         out = []
         for key, (info, var) in self.result_entries.items():
             cat = var.get().strip()
             if cat:
-                out.append((info["inn"], info["name"], cat))
+                out.append((info.get("account") or "", info["name"], cat))
         return out
 
 
@@ -178,15 +182,15 @@ class GroupsManagerDialog(tk.Toplevel):
         add_box = ttk.LabelFrame(self, text="Yangi guruh qo'shish", padding=10)
         add_box.pack(fill="x", padx=14, pady=(10, 0))
 
-        self.new_type = tk.StringVar(value="inn")
+        self.new_type = tk.StringVar(value="account")
         type_row = ttk.Frame(add_box)
         type_row.pack(fill="x")
-        ttk.Radiobutton(type_row, text="ИНН bo'yicha", variable=self.new_type, value="inn").pack(side="left")
+        ttk.Radiobutton(type_row, text="Xisob raqam bo'yicha", variable=self.new_type, value="account").pack(side="left")
         ttk.Radiobutton(type_row, text="Nomi bo'yicha", variable=self.new_type, value="name").pack(side="left", padx=(12, 0))
 
         fields_row = ttk.Frame(add_box)
         fields_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(fields_row, text="ИНН / Nomi:").pack(side="left")
+        ttk.Label(fields_row, text="Xisob raqam / Nomi:").pack(side="left")
         self.new_id_var = tk.StringVar()
         ttk.Entry(fields_row, textvariable=self.new_id_var, width=22).pack(side="left", padx=(6, 16))
         ttk.Label(fields_row, text="Guruh nomi:").pack(side="left")
@@ -199,7 +203,7 @@ class GroupsManagerDialog(tk.Toplevel):
         ttk.Button(pick_row, text="📄 Excel'dan tanlash...", command=self._pick_from_excel).pack(side="left")
         ttk.Label(
             pick_row,
-            text="— ИНН'ni qo'lda yozish o'rniga, haqiqiy hisobot faylini ochib, kontragentlarni belgilab tanlang.",
+            text="— Xisob raqamni qo'lda yozish o'rniga, haqiqiy hisobot faylini ochib, kontragentlarni belgilab tanlang.",
             foreground="#888888",
         ).pack(side="left", padx=(8, 0))
 
@@ -239,7 +243,7 @@ class GroupsManagerDialog(tk.Toplevel):
     def _add_row_widget(self, key, category):
         is_name = key.startswith(categorize._NAME_KEY_PREFIX)
         display_id = key[len(categorize._NAME_KEY_PREFIX):] if is_name else key
-        label_prefix = "Nomi: " if is_name else "ИНН: "
+        label_prefix = "Nomi: " if is_name else "Xisob raqam: "
 
         row = ttk.Frame(self.inner, padding=6, relief="groove", borderwidth=1)
         row.pack(fill="x", pady=3)
@@ -294,7 +298,7 @@ class GroupsManagerDialog(tk.Toplevel):
         if not ident or not cat:
             messagebox.showwarning("Diqqat", "ИНН/Nomi va Guruh nomini kiriting.")
             return
-        key = ident if self.new_type.get() == "inn" else f"{categorize._NAME_KEY_PREFIX}{ident}"
+        key = ident if self.new_type.get() == "account" else f"{categorize._NAME_KEY_PREFIX}{ident}"
         self.mapping[key] = cat
         categorize.save_all_mappings(self.mapping)
         self.new_id_var.set("")
@@ -334,14 +338,14 @@ class CounterpartyPickerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=14, pady=(8, 0))
 
-        columns = ("check", "inn", "name", "sample")
+        columns = ("check", "account", "name", "sample")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="none", height=16)
         self.tree.heading("check", text="✓")
-        self.tree.heading("inn", text="ИНН")
+        self.tree.heading("account", text="Xisob raqam")
         self.tree.heading("name", text="Nomi")
         self.tree.heading("sample", text="Namuna matn")
         self.tree.column("check", width=36, anchor="center")
-        self.tree.column("inn", width=110, anchor="w")
+        self.tree.column("account", width=140, anchor="w")
         self.tree.column("name", width=220, anchor="w")
         self.tree.column("sample", width=420, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -351,8 +355,8 @@ class CounterpartyPickerDialog(tk.Toplevel):
         scroll.pack(side="left", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
 
-        for key, info in sorted(parties.items(), key=lambda kv: (kv[1]["name"] or kv[1]["inn"]).lower()):
-            self.tree.insert("", "end", iid=key, values=("☐", info["inn"], info["name"], info["sample"]))
+        for key, info in sorted(parties.items(), key=lambda kv: (kv[1]["name"] or kv[1]["account"]).lower()):
+            self.tree.insert("", "end", iid=key, values=("☐", info["account"], info["name"], info["sample"]))
 
         footer = ttk.Frame(self, padding=14)
         footer.pack(fill="x")
@@ -388,8 +392,8 @@ class CounterpartyPickerDialog(tk.Toplevel):
             return
         for key in self.checked:
             info = self.parties[key]
-            if info["inn"]:
-                categorize.save_learned_category(info["inn"], "", cat)
+            if info["account"]:
+                categorize.save_learned_category(info["account"], "", cat)
             else:
                 categorize.save_learned_category("", info["name"], cat)
         self.applied = True
@@ -680,9 +684,9 @@ class App(tk.Tk):
                 self.status_label.configure(text="Tayyor")
                 return
             assignments = dialog.get_assignments()
-            for inn, name, cat in assignments:
-                categorize.save_learned_category(inn, name, cat)
-                self._log(f"Saqlandi: {name or inn} -> {cat}")
+            for account, name, cat in assignments:
+                categorize.save_learned_category(account, name, cat)
+                self._log(f"Saqlandi: {name or account} -> {cat}")
         else:
             self._log("Nomlanmagan kontragent topilmadi.")
 

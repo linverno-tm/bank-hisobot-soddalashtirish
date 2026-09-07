@@ -113,24 +113,26 @@ def _load_persist_dict():
 _load_persist_dict()
 
 
-def save_learned_category(inn, name, category):
+def save_learned_category(identifier, name, category):
     """Persist a user-supplied category for a previously-unresolved ("?")
-    counterparty, so future reports auto-classify it. Keyed by ИНН when
-    available (most reliable); falls back to the exact counterparty name
-    otherwise. Updates both the on-disk dictionary and the in-memory maps
-    so the rest of the current run benefits immediately."""
-    inn = str(inn).strip() if inn else ""
+    counterparty, so future reports auto-classify it. Keyed by Xisob raqam
+    (Счет) when available (most reliable, and stable per counterparty);
+    falls back to the exact counterparty name otherwise. `identifier` may
+    also be an ИНН, for backward compatibility with entries learned by
+    older versions of this app. Updates both the on-disk dictionary and the
+    in-memory maps so the rest of the current run benefits immediately."""
+    identifier = str(identifier).strip() if identifier else ""
     name = (name or "").strip()
-    if not inn and not name:
+    if not identifier and not name:
         return
     try:
         with open(_DICT_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except FileNotFoundError:
         raw = {}
-    if inn:
-        raw[inn] = category
-        KNOWN_VENDOR_INN[inn] = category
+    if identifier:
+        raw[identifier] = category
+        KNOWN_VENDOR_INN[identifier] = category
     else:
         raw[f"{_NAME_KEY_PREFIX}{name}"] = category
         KNOWN_VENDOR_NAME[name] = category
@@ -168,36 +170,39 @@ def save_all_mappings(mapping):
 
 def unique_counterparties(rows):
     """Return every unique counterparty found in a raw statement (keyed by
-    ИНН, or by name when ИНН is missing), regardless of whether it was
-    already classified. Used by the Guruhlar-manager UI to let the user
-    pick a real counterparty out of an actual file (like browsing the
-    statement itself) instead of typing an ИНН by hand."""
+    Xisob raqam / Счет, or by name when the account number is missing),
+    regardless of whether it was already classified. Used by the
+    Guruhlar-manager UI to let the user pick a real counterparty out of an
+    actual file (like browsing the statement itself) instead of typing an
+    identifier by hand."""
     parties = {}
     for r in rows:
+        account = str(r["account"]).strip() if r["account"] else ""
         inn = str(r["inn"]).strip() if r["inn"] else ""
         name = str(r["name"] or "").strip()
-        if not inn and not name:
+        if not account and not name:
             continue
-        key = inn if inn else f"{_NAME_KEY_PREFIX}{name}"
+        key = account if account else f"{_NAME_KEY_PREFIX}{name}"
         if key not in parties:
-            parties[key] = {"inn": inn, "name": name, "sample": str(r["purpose"] or "")[:200]}
+            parties[key] = {"account": account, "inn": inn, "name": name, "sample": str(r["purpose"] or "")[:200]}
     return parties
 
 
 def find_unresolved(rows):
     """Scan rows and return unique unclassified ("?") counterparties, keyed
-    by ИНН (or by name when ИНН is missing), for the caller to ask the user
-    about before generating the report."""
+    by Xisob raqam / Счет (or by name when the account number is missing),
+    for the caller to ask the user about before generating the report."""
     unresolved = {}
     for r in rows:
-        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"])
+        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
         if conf != "review":
             continue
-        inn = str(r["inn"]).strip() if r["inn"] else ""
+        account = str(r["account"]).strip() if r["account"] else ""
         name = str(r["name"] or "").strip()
-        key = inn if inn else f"{_NAME_KEY_PREFIX}{name}"
+        key = account if account else f"{_NAME_KEY_PREFIX}{name}"
         entry = unresolved.setdefault(key, {
-            "inn": inn,
+            "account": account,
+            "inn": str(r["inn"]).strip() if r["inn"] else "",
             "name": name,
             "sample": str(r["purpose"] or "")[:200],
             "count": 0,
@@ -206,17 +211,25 @@ def find_unresolved(rows):
     return unresolved
 
 
-def classify_row(op, name, text, inn):
-    """Classify a SINGLE row by its own text/name/ИНН. Never looks at other
-    rows sharing the same raw account number."""
+def classify_row(op, name, text, inn, account=None):
+    """Classify a SINGLE row by its own text/name/Xisob raqam. Never looks
+    at other rows sharing the same raw account number.
+
+    Matching is done primarily by the counterparty's Xisob raqam (Счет).
+    ИНН is kept as a secondary fallback so categories learned by older
+    versions of this app (persist_dictionary.json entries keyed by ИНН)
+    keep working after this update."""
     name = name or ""
     text = text or ""
 
     if re.search(r"начисленные\s*%%", name, re.I):
         return "банк хизмати", "high"
 
-    inn = str(inn) if inn else ""
-    if inn in KNOWN_VENDOR_INN:
+    account = str(account).strip() if account else ""
+    inn = str(inn).strip() if inn else ""
+    if account and account in KNOWN_VENDOR_INN:
+        return KNOWN_VENDOR_INN[account], "high"
+    if inn and inn in KNOWN_VENDOR_INN:
         return KNOWN_VENDOR_INN[inn], "high"
 
     name_key = name.strip()
@@ -233,14 +246,16 @@ def classify_row(op, name, text, inn):
     return "?", "review"
 
 
-def propose_category_for_group(op_values, names, texts, inns):
+def propose_category_for_group(op_values, names, texts, inns, accounts=None):
     """Given all rows sharing one raw account number, classify each row on
     its own merits, then only collapse to a single group-level category if
     every row agrees. A raw account is NOT trusted as a category by itself
     (e.g. a generic treasury account can carry profit tax, VAT AND utility
     payments; conversely two different accounts that both happen to mention
     HUMO/SmartVista text should NOT be assumed identical without agreeing)."""
-    per_row = [classify_row(op, n, t, i) for op, n, t, i in zip(op_values, names, texts, inns)]
+    if accounts is None:
+        accounts = [None] * len(op_values)
+    per_row = [classify_row(op, n, t, i, a) for op, n, t, i, a in zip(op_values, names, texts, inns, accounts)]
     cats = {c for c, _ in per_row}
     if len(cats) == 1:
         cat, conf = per_row[0]
@@ -297,7 +312,8 @@ def build_account_proposals(rows):
 
     proposals = {}
     for acct, g in groups.items():
-        cat, conf, per_row = propose_category_for_group(g["op"], g["names"], g["texts"], g["inns"])
+        accounts = [acct] * len(g["rows"])
+        cat, conf, per_row = propose_category_for_group(g["op"], g["names"], g["texts"], g["inns"], accounts)
         proposals[acct] = {
             "category": cat,
             "confidence": conf,
