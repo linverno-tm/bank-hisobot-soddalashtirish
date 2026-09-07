@@ -41,7 +41,7 @@ def run(src_path, out_path):
 
     results = []  # (row_dict, category, confidence)
     for r in rows:
-        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"])
+        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
         results.append((r, cat, conf))
         by_account[r["account"]].add(cat)
 
