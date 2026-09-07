@@ -22,6 +22,7 @@ import sv_ttk
 
 import build_report
 import categorize
+import updater
 
 
 def find_excel_exe():
@@ -401,6 +402,70 @@ class CounterpartyPickerDialog(tk.Toplevel):
         self.destroy()
 
 
+class UpdateAvailableDialog(tk.Toplevel):
+    """Yangi versiya topilganda ko'rsatiladigan tasdiqlash oynasi."""
+
+    def __init__(self, parent, tag, notes):
+        super().__init__(parent)
+        self.title("Yangi versiya topildi")
+        self.geometry("420x260")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.confirmed = False
+
+        body = ttk.Frame(self, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body, text=f"Yangi versiya: {tag}", font=("Segoe UI Semibold", 12)
+        ).pack(anchor="w")
+        ttk.Label(
+            body,
+            text=f"O'rnatilgan versiya: v{updater.APP_VERSION}",
+            foreground="#666666",
+        ).pack(anchor="w", pady=(2, 10))
+        if notes:
+            text = tk.Text(body, height=6, wrap="word", relief="flat", background=self.cget("background"))
+            text.insert("1.0", notes[:800])
+            text.configure(state="disabled")
+            text.pack(fill="both", expand=True)
+
+        footer = ttk.Frame(self, padding=16)
+        footer.pack(fill="x")
+        ttk.Button(footer, text="Hozir yangilash", style="Accent.TButton", command=self._on_yes).pack(side="right")
+        ttk.Button(footer, text="Keyinroq", command=self._on_no).pack(side="right", padx=(0, 8))
+
+    def _on_yes(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _on_no(self):
+        self.confirmed = False
+        self.destroy()
+
+
+class UpdateProgressDialog(tk.Toplevel):
+    """Yangilanish yuklanayotganda ko'rsatiladigan progress oynasi."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Yangilanmoqda...")
+        self.geometry("360x120")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # yopib bo'lmaydi
+
+        body = ttk.Frame(self, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Yangi versiya yuklanmoqda, biroz kuting...").pack(anchor="w", pady=(0, 10))
+        self.bar = ttk.Progressbar(body, mode="determinate", maximum=100)
+        self.bar.pack(fill="x")
+
+    def set_progress(self, pct):
+        self.bar.configure(value=pct)
+
+
 class App(tk.Tk):
     STATUS_COLORS = {
         "Kutmoqda": "#666666",
@@ -425,6 +490,7 @@ class App(tk.Tk):
 
         self._build_ui()
         self.after(100, self._poll_queue)
+        self.after(1500, self._check_update_background)
 
     # ---------------------------------------------------------- UI layout
     def _setup_fonts(self):
@@ -449,7 +515,15 @@ class App(tk.Tk):
 
         header = ttk.Frame(root)
         header.pack(fill="x", pady=(0, 14))
-        ttk.Label(header, text="Bank hisobotini soddalashtirish", font=self.heading_font).pack(anchor="w")
+        title_row = ttk.Frame(header)
+        title_row.pack(fill="x")
+        ttk.Label(title_row, text="Bank hisobotini soddalashtirish", font=self.heading_font).pack(side="left")
+        ttk.Label(
+            title_row, text=f"  v{updater.APP_VERSION}", font=self.subtitle_font, foreground="#999999"
+        ).pack(side="left", anchor="s", pady=(0, 3))
+        ttk.Button(
+            title_row, text="🔄 Yangilanishni tekshirish", command=self._check_update_manual
+        ).pack(side="right")
         ttk.Label(
             header,
             text="Xom Hamkorbank hisobotlarini tanlang — har biri alohida Excel faylga aylantiriladi.",
@@ -549,6 +623,51 @@ class App(tk.Tk):
     def open_groups_manager(self):
         dialog = GroupsManagerDialog(self)
         self.wait_window(dialog)
+
+    # ------------------------------------------------------ auto-update
+    def _check_update_background(self):
+        """Ilova ochilganda jimgina (xabarnomasiz) tekshiradi — internet
+        yo'q yoki yangilanish bo'lmasa, foydalanuvchiga hech narsa
+        ko'rinmaydi."""
+        threading.Thread(target=self._run_update_check, args=(False,), daemon=True).start()
+
+    def _check_update_manual(self):
+        """'Yangilanishni tekshirish' tugmasi — natija har doim (topilmasa
+        ham) xabar sifatida ko'rsatiladi."""
+        threading.Thread(target=self._run_update_check, args=(True,), daemon=True).start()
+
+    def _run_update_check(self, verbose):
+        result = updater.check_for_update()
+        self.after(0, lambda: self._on_update_check_result(result, verbose))
+
+    def _on_update_check_result(self, result, verbose):
+        if result is None:
+            if verbose:
+                if not getattr(sys, "frozen", False):
+                    messagebox.showinfo("Yangilanish", "Yangilanishni tekshirish faqat build qilingan .exe versiyasida ishlaydi.")
+                else:
+                    messagebox.showinfo("Yangilanish", f"Sizda eng oxirgi versiya o'rnatilgan (v{updater.APP_VERSION}).")
+            return
+        tag, asset_url, asset_name, notes = result
+        dialog = UpdateAvailableDialog(self, tag, notes)
+        self.wait_window(dialog)
+        if dialog.confirmed:
+            self._start_update_download(asset_url, asset_name)
+
+    def _start_update_download(self, asset_url, asset_name):
+        self._update_progress_dialog = UpdateProgressDialog(self)
+
+        def worker():
+            try:
+                def on_progress(done, total):
+                    pct = int(done * 100 / total) if total else 0
+                    self.ui_queue.put(("update_progress", pct, None))
+                updater.download_and_apply_update(asset_url, asset_name, progress_cb=on_progress)
+                self.ui_queue.put(("update_ready", None, None))
+            except Exception as e:
+                self.ui_queue.put(("update_error", str(e), None))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def pick_out_dir(self):
         d = filedialog.askdirectory(title="Natijalarni saqlash papkasini tanlang")
@@ -737,6 +856,21 @@ class App(tk.Tk):
                 elif kind == "scan_done":
                     out_dir, unresolved = a, b
                     self._handle_scan_done(out_dir, unresolved)
+                elif kind == "update_progress":
+                    if getattr(self, "_update_progress_dialog", None):
+                        self._update_progress_dialog.set_progress(a)
+                elif kind == "update_ready":
+                    if getattr(self, "_update_progress_dialog", None):
+                        self._update_progress_dialog.destroy()
+                    messagebox.showinfo(
+                        "Yangilanish",
+                        "Yangi versiya yuklandi. Ilova hozir qayta ishga tushadi.",
+                    )
+                    self.after(200, lambda: os._exit(0))
+                elif kind == "update_error":
+                    if getattr(self, "_update_progress_dialog", None):
+                        self._update_progress_dialog.destroy()
+                    messagebox.showerror("Yangilanish xatosi", f"Yangilashda xato yuz berdi:\n{a}")
                 elif kind == "done":
                     ok, err = a, b
                     self.is_running = False
