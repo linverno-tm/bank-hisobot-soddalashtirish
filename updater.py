@@ -29,7 +29,7 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.11.1"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "SoddaHisobot-Updater"

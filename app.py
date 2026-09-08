@@ -488,6 +488,11 @@ class App(tk.Tk):
         self._build_ui()
         self._last_state = self.state()
         self.bind("<Configure>", self._on_root_configure)
+        # Kompyuterda .exe ning bir necha nusxasi qolib ketishi mumkin
+        # (qayta-qayta qo'lda yuklanganda). Qaysi nusxa ochilganini bilish
+        # uchun joylashuvni jurnalga yozamiz — aks holda "menda eski versiya
+        # ko'rinyapti" degan holatni tekshirib bo'lmaydi.
+        self._log(f"Versiya v{updater.APP_VERSION}  |  Joylashuvi: {os.path.abspath(sys.executable)}")
         self.after(100, self._poll_queue)
         self.after(800, self._check_update_background)
         threading.Thread(target=updater.send_ping, daemon=True).start()
