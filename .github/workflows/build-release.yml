@@ -35,19 +35,19 @@ jobs:
 
       - name: .exe yasash (PyInstaller)
         run: |
-          pyinstaller --onefile --windowed --name BankHisobotSoddalashtirish app.py
+          pyinstaller --onefile --windowed --name SoddaHisobot --icon app_icon.ico app.py
 
       - name: Paketlash (exe + O'QING.txt + bo'sh dictionary)
         shell: pwsh
         run: |
           Copy-Item "O'QING.txt" "dist/O'QING.txt"
           Set-Content -Path "dist/persist_dictionary.json" -Value "{}" -Encoding utf8
-          Compress-Archive -Path "dist/BankHisobotSoddalashtirish.exe","dist/O'QING.txt","dist/persist_dictionary.json" -DestinationPath "dist/BankHisobotSoddalashtirish.zip"
+          Compress-Archive -Path "dist/SoddaHisobot.exe","dist/O'QING.txt","dist/persist_dictionary.json" -DestinationPath "dist/SoddaHisobot.zip"
 
       - name: Release yaratish va fayllarni biriktirish
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/BankHisobotSoddalashtirish.exe
-            dist/BankHisobotSoddalashtirish.zip
+            dist/SoddaHisobot.exe
+            dist/SoddaHisobot.zip
           generate_release_notes: true

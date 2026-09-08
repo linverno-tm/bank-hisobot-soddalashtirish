@@ -444,7 +444,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Bank hisobotini soddalashtirish")
+        self.title("SoddaHisobot")
         self._apply_dpi_scaling()
         self.geometry("960x680")
         self.minsize(860, 580)
@@ -540,7 +540,7 @@ class App(tk.Tk):
         title_row.columnconfigure(0, weight=1)
         title_group = ttk.Frame(title_row)
         title_group.grid(row=0, column=0, sticky="w")
-        ttk.Label(title_group, text="Bank hisobotini soddalashtirish", font=self.heading_font).pack(side="left")
+        ttk.Label(title_group, text="SoddaHisobot", font=self.heading_font).pack(side="left")
         ttk.Label(
             title_group, text=f"  v{updater.APP_VERSION}", font=self.subtitle_font, foreground="#999999"
         ).pack(side="left", anchor="s", pady=(0, 3))
@@ -970,7 +970,7 @@ def _ensure_desktop_shortcut():
         return
     try:
         desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-        shortcut_path = os.path.join(desktop, "Bank hisobotini soddalashtirish.lnk")
+        shortcut_path = os.path.join(desktop, "SoddaHisobot.lnk")
         if not os.path.isdir(desktop) or os.path.exists(shortcut_path):
             return
         target = os.path.abspath(sys.executable)

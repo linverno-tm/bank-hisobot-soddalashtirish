@@ -1,8 +1,8 @@
-Bank hisobotini soddalashtirish — desktop ilova
+SoddaHisobot — bank hisobotlarini soddalashtiruvchi desktop ilova
 =================================================
 
 Ishlatilishi:
-1. "BankHisobotSoddalashtirish.exe" faylini ikki marta bosib oching.
+1. "SoddaHisobot.exe" faylini ikki marta bosib oching.
 2. "Fayllarni tanlash..." tugmasi orqali bir nechta xom Hamkorbank
    Client-Bank hisobot faylini (.xlsx) belgilang (30 tagacha birdan
    bo'lishi mumkin).
