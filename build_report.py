@@ -11,9 +11,10 @@ qo'lda tayyorlaydigan "soddalashtirilgan" formatga o'giradi:
 Ishlatilishi:
     python build_report.py "D:\\Telegram Desktop\\AB M  Avgust.xlsx" "natija.xlsx"
 
-Natijada ikkinchi fayl (masalan natija_review.txt) — qaysi qatorlar past
-ishonch bilan (guess) yoki umuman tekshirilmagan ("?") ekanini ko'rsatadi;
-shularni Excelda ochib bir marta ko'zdan kechirish kifoya.
+Bank hisobotlari bir necha xil ko'rinishda keladi (ustunlar tartibi va
+sarlavha qatori har xil, ba'zilarida ИНН/Наименование ustunlari yo'q va
+hisob raqam nom bilan bitta katakda turadi) — ustunlar nomi bo'yicha
+aniqlanadi, categorize.load_raw_rows ga qarang.
 """
 import os
 import sys
@@ -24,6 +25,7 @@ from copy import copy
 import openpyxl
 from openpyxl.styles import Font, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.cell.cell import MergedCell
 
 from categorize import load_raw_rows, classify_row, KNOWN_VENDOR_INN
 
@@ -34,13 +36,26 @@ FONT_NAME = "Times New Roman"
 FONT_SIZE = 14
 
 
+def _writable_cell(ws, row, col):
+    """Katakka yozish uchun tayyor obyekt qaytaradi. Ba'zi hisobotlarda
+    ustunlar birlashtirilgan (merged) bo'ladi — bunday katakka to'g'ridan
+    to'g'ri yozib bo'lmaydi, faqat birlashma boshidagi katakka yoziladi.
+    Shu boshlang'ich katakni topib beradi."""
+    cell = ws.cell(row=row, column=col)
+    if not isinstance(cell, MergedCell):
+        return cell
+    for rng in ws.merged_cells.ranges:
+        if (rng.min_row <= row <= rng.max_row) and (rng.min_col <= col <= rng.max_col):
+            return ws.cell(row=rng.min_row, column=rng.min_col)
+    return None
+
+
 def run(src_path, out_path):
-    wb, ws, header_row, rows = load_raw_rows(src_path)
+    wb, ws, layout, rows = load_raw_rows(src_path)
 
     # classify every row independently, then sanity-check by raw account:
     # if one raw account ends up split across >1 category, surface it so it
-    # gets extra attention in the review file (still applied per-row, never
-    # silently collapsed).
+    # gets extra attention (still applied per-row, never silently collapsed).
     from collections import defaultdict
     by_account = defaultdict(set)
 
@@ -50,11 +65,14 @@ def run(src_path, out_path):
         results.append((r, cat, conf))
         by_account[r["account"]].add(cat)
 
-    # 1) rewrite the "Счет" column in place (column B), preserving all other
-    #    formatting/merged cells/column widths from the original workbook
-    col_letter = "B"
+    # 1) "Счет" ustunini joyida kategoriya nomiga almashtiramiz (qolgan
+    #    bezaklar, ustun kengliklari o'zgarmaydi). Ustun indeksi hisobot formatiga qarab har xil (B, D ...), shuning
+    # uchun load_raw_rows aniqlagan joylashuvdan olamiz.
+    account_col = layout["cols"]["account"] + 1  # openpyxl 1-asosli
     for r, cat, conf in results:
-        cell = ws[f"{col_letter}{r['excel_row']}"]
+        cell = _writable_cell(ws, r["excel_row"], account_col)
+        if cell is None:
+            continue
         cell.value = cat
         cell.number_format = "@"
 
@@ -168,29 +186,14 @@ def run(src_path, out_path):
 
     wb.save(out_path)
 
-    # 3) review list: rows that are guesses or unresolved, for a quick
-    #    once-over in Excel before the file is treated as final
-    review_lines = []
-    for r, cat, conf in results:
-        if conf in ("guess", "review"):
-            review_lines.append(
-                f"row {r['excel_row']:4} | {cat:18} ({conf:6}) | {r['name']} | {str(r['purpose'])[:130]}"
-            )
-    for acct, cats in by_account.items():
-        if len(cats) > 1:
-            review_lines.insert(0, f"OGOHLANTIRISH: hisob {acct} bir nechta toifaga bo'lindi: {cats}")
-
-    review_path = out_path.rsplit(".", 1)[0] + "_tekshirish.txt"
-    with open(review_path, "w", encoding="utf-8") as f:
-        if review_lines:
-            f.write("\n".join(review_lines))
-        else:
-            f.write("Hammasi yuqori ishonch bilan avtomatik belgilandi.\n")
+    # 3) Past ishonch bilan belgilangan qatorlar soni. Avval bu ro'yxat
+    #    alohida "_tekshirish.txt" fayliga yozilardi, lekin buyurtmachiga
+    #    faqat Excel fayl kerak — endi bu son ilova jurnalida ko'rsatiladi.
+    review_count = sum(1 for _r, _cat, conf in results if conf in ("guess", "review"))
 
     return {
         "out_path": out_path,
-        "review_path": review_path,
-        "review_count": len(review_lines),
+        "review_count": review_count,
         "total_debet": total_debet,
         "total_kredit": total_kredit,
     }
@@ -203,7 +206,7 @@ if __name__ == "__main__":
     # (the one that matters) has already been saved successfully.
     try:
         print(f"Saqlandi: {info['out_path']}")
-        print(f"Tekshirish ro'yxati: {info['review_path']} ({info['review_count']} ta band)")
+        print(f"Past ishonchli qatorlar: {info['review_count']} ta")
         print(f"Jami: debet={info['total_debet']} kredit={info['total_kredit']}")
     except UnicodeEncodeError:
         print("Saqlandi (nomi kirill belgilar tufayli konsolda ko'rsatilmadi).")

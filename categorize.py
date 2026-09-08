@@ -325,36 +325,147 @@ def propose_category_for_group(op_values, names, texts, inns, accounts=None):
     return "ARALASH", "mixed", per_row
 
 
+# Ustunlarni JOYLASHUVI bo'yicha emas, SARLAVHA NOMI bo'yicha aniqlaymiz —
+# chunki banklar bir necha xil ko'rinishda hisobot beradi:
+#   A) "CBreport63": Дата | Счет | ИНН | Наименование | № док-та | Оп | МФО | ...
+#   B) "Сведения о работе счета": ИНН va Наименование ustunlari YO'Q, hisob
+#      raqam katagida nom yangi qatordan keyin turadi, summalar esa matn
+#      ko'rinishida ("1 170 682,76")
+#   C) "Sheet1": Дата проводки | Номер документа | МФО корресп. | Счет
+#      корреспондента | Наименование корресп. | ИНН | Детали | Дебет | Кредит
+# Shu tarzda kelajakda yana bir variant chiqsa ham kod ishlayveradi.
+_COLUMN_ALIASES = {
+    "date": ("дата проводки", "дата"),
+    "account": ("счет корреспондента", "счет корресп.", "счет"),
+    "inn": ("инн",),
+    "name": ("наименование корресп.", "наименование корресп", "наименование"),
+    "doc_no": ("№ док-та", "номер документа", "№ док"),
+    "op": ("оп",),
+    "mfo": ("мфо корресп.", "мфо корресп", "мфо"),
+    "debit": ("оборот дебет", "дебет"),
+    "credit": ("оборот кредит", "кредит"),
+    "purpose": ("назначение платежа", "детали"),
+}
+
+
+def _norm_header(value):
+    """Sarlavha matnini solishtirishga tayyorlaydi: kichik harf, yangi
+    qator va ortiqcha bo'shliqlar bitta bo'shliqqa aylanadi."""
+    return " ".join(str(value or "").split()).strip().lower()
+
+
+def _detect_header(ws, max_scan=30):
+    """Sarlavha qatorini va ustunlar xaritasini topadi. Kamida "дата",
+    "счет" va "назначение платежа"/"детали" bo'lishi shart, aks holda bu
+    qator sarlavha emas."""
+    for row in ws.iter_rows(min_row=1, max_row=min(max_scan, ws.max_row)):
+        found = {}
+        for cell in row:
+            h = _norm_header(cell.value)
+            if not h:
+                continue
+            for field, aliases in _COLUMN_ALIASES.items():
+                if field in found:
+                    continue
+                if h in aliases:
+                    found[field] = cell.column - 1  # 0-asosli indeks
+                    break
+        if "date" in found and "account" in found and "purpose" in found:
+            return row[0].row, found
+    return None, {}
+
+
+def _parse_amount(value):
+    """Summani songa aylantiradi. Ba'zi hisobotlarda summa matn bo'lib
+    keladi: "1 170 682,76" yoki "0,00" — bo'sh joylar ajratuvchi, vergul
+    esa kasr belgisi."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return value or None
+    t = str(value).replace("\xa0", " ").replace(" ", "").replace(",", ".")
+    if not t or t in ("-", "."):
+        return None
+    try:
+        num = float(t)
+    except ValueError:
+        return None
+    return num or None
+
+
+def _parse_op(value):
+    """Operatsiya turi ba'zi hisobotlarda matn ("4"), ba'zilarida son
+    bo'lib keladi, C formatida esa bu ustun umuman yo'q."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _split_account_cell(value):
+    """B formatida hisob raqam katagi "23508000007102718500\\nYANGI..."
+    ko'rinishida keladi — raqam birinchi qatorda, kontragent nomi esa
+    keyingi qatorlarda. Ikkalasini ajratib qaytaradi."""
+    parts = [p.strip() for p in str(value or "").splitlines() if p.strip()]
+    if not parts:
+        return "", ""
+    return parts[0], " ".join(parts[1:])
+
+
 def load_raw_rows(path, sheet_name=None):
+    """Xom hisobotni o'qiydi. Qaytaradi: (wb, ws, layout, rows), bunda
+    `layout` — {"header_row": int, "cols": {maydon: ustun indeksi}}.
+    Chaqiruvchi hisobotga yozishda `layout["cols"]["account"]` dan
+    foydalanishi kerak, chunki hisob raqam ustuni har formatda har xil
+    joyda turadi."""
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
-    header_row = None
+
+    header_row, cols = _detect_header(ws)
+    if header_row is None:
+        raise ValueError(
+            "Bu faylda tanish sarlavha qatori topilmadi "
+            "(kamida \"Дата\", \"Счет\" va \"Назначение платежа\" ustunlari kerak)."
+        )
+
+    def get(vals, field):
+        idx = cols.get(field)
+        if idx is None or idx >= len(vals):
+            return None
+        return vals[idx]
+
     rows = []
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row):
         vals = [c.value for c in row]
-        if vals[0] == "Дата" and vals[1] == "Счет":
-            header_row = row[0].row
+        if not vals or all(v is None for v in vals):
             continue
-        if header_row is None:
+        if is_total_row(get(vals, "date")):
             continue
-        if is_total_row(vals[0]):
-            continue
-        if all(v is None for v in vals):
-            continue
+
+        account_raw = get(vals, "account")
+        account, embedded_name = _split_account_cell(account_raw)
+        name = get(vals, "name")
+        if not name and embedded_name:
+            # B formatida alohida "Наименование" ustuni yo'q — nom hisob
+            # raqam katagining ichida keladi.
+            name = embedded_name
+
         rows.append({
             "excel_row": row[0].row,
-            "date": vals[0],
-            "account": vals[1],
-            "inn": vals[2],
-            "name": vals[3],
-            "doc_no": vals[4],
-            "op": vals[5],
-            "mfo": vals[6],
-            "debit": vals[7],
-            "credit": vals[8],
-            "purpose": vals[9] or "",
+            "date": get(vals, "date"),
+            "account": account,
+            "inn": get(vals, "inn"),
+            "name": name,
+            "doc_no": get(vals, "doc_no"),
+            "op": _parse_op(get(vals, "op")),
+            "mfo": get(vals, "mfo"),
+            "debit": _parse_amount(get(vals, "debit")),
+            "credit": _parse_amount(get(vals, "credit")),
+            "purpose": get(vals, "purpose") or "",
         })
-    return wb, ws, header_row, rows
+    return wb, ws, {"header_row": header_row, "cols": cols}, rows
 
 
 def build_account_proposals(rows):
