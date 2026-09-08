@@ -15,6 +15,7 @@ Natijada ikkinchi fayl (masalan natija_review.txt) — qaysi qatorlar past
 ishonch bilan (guess) yoki umuman tekshirilmagan ("?") ekanini ko'rsatadi;
 shularni Excelda ochib bir marta ko'zdan kechirish kifoya.
 """
+import os
 import sys
 import json
 from decimal import Decimal
@@ -27,6 +28,10 @@ from openpyxl.utils import get_column_letter
 from categorize import load_raw_rows, classify_row, KNOWN_VENDOR_INN
 
 DICT_PATH = "persist_dictionary.json"
+
+# Yakuniy hisobotdagi yagona shrift (buyurtmachi so'roviga ko'ra)
+FONT_NAME = "Times New Roman"
+FONT_SIZE = 14
 
 
 def run(src_path, out_path):
@@ -88,7 +93,10 @@ def run(src_path, out_path):
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     acc_fmt = '_-* #,##0_-;\\-* #,##0_-;_-* "-"??_-;_-@_-'
 
-    title = src_path.split("\\")[-1].rsplit(".", 1)[0]
+    # Faqat fayl nomi ("АБ М Август"), to'liq yo'l emas. os.path.basename
+    # ishlatiladi, chunki fayl tanlash oynasi yo'lni "/" bilan qaytaradi va
+    # oldingi "\\" bo'yicha ajratish butun yo'lni sarlavhaga yozib qo'yardi.
+    title = os.path.splitext(os.path.basename(src_path))[0]
     summary["B2"] = title
     summary["B2"].font = Font(bold=True)
     if open_bal is not None:
@@ -142,6 +150,21 @@ def run(src_path, out_path):
     summary.column_dimensions["B"].width = 24
     summary.column_dimensions["C"].width = 16
     summary.column_dimensions["D"].width = 16
+
+    # Butun kitob bo'ylab yagona shrift: Times New Roman, 14. Qalinlik
+    # (bold) va boshqa bezaklar qayerda bo'lsa, o'sha holicha saqlanadi.
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                old = cell.font
+                cell.font = Font(
+                    name=FONT_NAME,
+                    size=FONT_SIZE,
+                    bold=old.bold,
+                    italic=old.italic,
+                    underline=old.underline,
+                    color=old.color,
+                )
 
     wb.save(out_path)
 
