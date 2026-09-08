@@ -1,0 +1,8 @@
+name = "soddahisobot-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "soddahisobot"
+database_id = "344c5e25-3845-4f79-b615-307935544c50"

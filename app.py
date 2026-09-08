@@ -489,7 +489,8 @@ class App(tk.Tk):
         self._last_state = self.state()
         self.bind("<Configure>", self._on_root_configure)
         self.after(100, self._poll_queue)
-        self.after(1500, self._check_update_background)
+        self.after(800, self._check_update_background)
+        threading.Thread(target=updater.send_ping, daemon=True).start()
 
     def _on_root_configure(self, event):
         """Windowsda oyna maximize/restore qilinganda ba'zi ttk widget'lar
@@ -683,7 +684,7 @@ class App(tk.Tk):
         self.wait_window(dialog)
 
     # ------------------------------------------------------ auto-update
-    UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000  # 30 daqiqada bir marta
+    UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000  # 5 daqiqada bir marta
 
     def _check_update_background(self):
         """Jimgina (xabarnomasiz) tekshiradi — internet yo'q yoki

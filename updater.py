@@ -29,11 +29,16 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "SoddaHisobot-Updater"
 _OLD_EXE_PREFIX = "_old_"
+# Ilova ochilganda o'z versiyasini yuboradigan manzil. Faqat kompyuter
+# nomi va versiya yuboriladi — boshqa hech qanday ma'lumot emas. Bu
+# dasturchiga "boshliqda qaysi versiya ishlab turibdi" degan savolga
+# javob berish uchun kerak (aks holda buni faqat so'rab bilish mumkin).
+_PING_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/ping"
 
 
 def _version_tuple(v):
@@ -183,5 +188,27 @@ def cleanup_old_versions():
         old_path = os.path.join(exe_dir, f"{_OLD_EXE_PREFIX}{os.path.basename(exe_path)}")
         if os.path.exists(old_path):
             os.remove(old_path)
+    except Exception:
+        pass
+
+
+def send_ping():
+    """Ilova ochilganini va qaysi versiya ekanini xabar qiladi. To'liq
+    "ovozsiz": internet yo'q bo'lsa yoki server javob bermasa, ilova
+    ishlashiga umuman ta'sir qilmaydi. Alohida oqimda chaqirilishi kerak."""
+    try:
+        import platform
+
+        payload = json.dumps({
+            "host": platform.node() or "noma'lum",
+            "version": APP_VERSION,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _PING_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5).close()
     except Exception:
         pass
