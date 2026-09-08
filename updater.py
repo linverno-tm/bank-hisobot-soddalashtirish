@@ -8,12 +8,14 @@ Ishlash tartibi:
      versiyani taqqoslaydi. Internet yo'q yoki GitHub javob bermasa, jim
      tarzda None qaytaradi (ilova ishlashiga hech qanday xalaqit bermaydi).
   2. download_and_apply_update() — yangi .exe (yoki uni ichida saqlagan
-     .zip) ni yuklab oladi, joriy .exe bilan bir papkaga saqlaydi, so'ng
-     kichik bir .bat skript yozadi: bu skript ilova butunlay yopilishini
-     kutadi, eski .exe'ni yangisiga almashtiradi va ilovani qayta ishga
-     tushiradi. persist_dictionary.json faylga HECH QACHON tegilmaydi —
-     faqat .exe almashtiriladi, shuning uchun o'rgatilgan guruhlar
-     yo'qolmaydi.
+     .zip) ni yuklab oladi, joriy .exe'ni "_old_" prefiksi bilan qayta
+     nomlab, yangisini uning o'rniga qo'yadi va to'g'ridan-to'g'ri ishga
+     tushiradi. Hech qanday .bat/cmd.exe ishlatilmaydi — antiviruslar
+     shunday sxemani zararli deb bloklaydi. persist_dictionary.json faylga
+     HECH QACHON tegilmaydi — faqat .exe almashtiriladi, shuning uchun
+     o'rgatilgan guruhlar yo'qolmaydi.
+  3. cleanup_old_versions() — keyingi ishga tushishda qolib ketgan
+     "_old_*.exe" nusxasini o'chiradi.
 
 Bu modul faqat PyInstaller bilan yig'ilgan (frozen) .exe holatida ishlaydi;
 oddiy "python app.py" orqali ishga tushirilganda yangilanish o'zini
@@ -27,10 +29,11 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-_USER_AGENT = "BankHisobotSoddalashtirish-Updater"
+_USER_AGENT = "SoddaHisobot-Updater"
+_OLD_EXE_PREFIX = "_old_"
 
 
 def _version_tuple(v):
@@ -138,29 +141,47 @@ def download_and_apply_update(asset_url, asset_name, progress_cb=None):
     else:
         new_exe_path = download_path
 
-    pid = os.getpid()
-    bat_path = os.path.join(exe_dir, "_apply_update.bat")
-    # Joriy jarayon butunlay yopilguncha kutadi (tasklist orqali PID
-    # tekshiriladi), so'ng eski .exe'ni yangisiga almashtirib, qayta
-    # ishga tushiradi va o'zini o'chiradi.
-    bat_contents = (
-        "@echo off\r\n"
-        ":wait\r\n"
-        f'tasklist /fi "PID eq {pid}" 2^>nul | find "{pid}" >nul\r\n'
-        "if not errorlevel 1 (\r\n"
-        "  timeout /t 1 /nobreak >nul\r\n"
-        "  goto wait\r\n"
-        ")\r\n"
-        f'move /y "{new_exe_path}" "{exe_path}" >nul\r\n'
-        f'start "" "{exe_path}"\r\n'
-        'del "%~f0"\r\n'
-    )
-    with open(bat_path, "w", encoding="utf-8") as f:
-        f.write(bat_contents)
+    # .bat + cmd.exe ishlatmaymiz: ishlab turgan .exe'ni almashtirish uchun
+    # yordamchi skript ochish antiviruslar tomonidan zararli xatti-harakat
+    # sifatida bloklanadi ("Security validation failure: failed to obtain
+    # executable path for parent process" kabi xatolar shundan chiqadi).
+    #
+    # Windows ishlab turgan .exe faylni O'CHIRISHGA ruxsat bermaydi, lekin
+    # QAYTA NOMLASHGA ruxsat beradi. Shundan foydalanamiz:
+    #   1. joriy .exe -> "<nom>_old.exe" deb qayta nomlanadi
+    #   2. yangi .exe uning o'rniga qo'yiladi
+    #   3. yangi .exe to'g'ridan-to'g'ri ishga tushiriladi (hech qanday
+    #      oraliq skriptsiz), joriy jarayon esa chiqib ketadi
+    # Eski "_old.exe" keyingi ishga tushishda cleanup_old_versions() bilan
+    # o'chiriladi (o'shanda u endi band bo'lmaydi).
+    old_path = os.path.join(exe_dir, f"{_OLD_EXE_PREFIX}{os.path.basename(exe_path)}")
+    if os.path.exists(old_path):
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
 
-    subprocess.Popen(
-        ["cmd", "/c", bat_path],
-        cwd=exe_dir,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        close_fds=True,
-    )
+    os.replace(exe_path, old_path)
+    try:
+        os.replace(new_exe_path, exe_path)
+    except OSError:
+        os.replace(old_path, exe_path)  # muvaffaqiyatsiz bo'lsa, eskisini tiklaymiz
+        raise
+
+    subprocess.Popen([exe_path], cwd=exe_dir, close_fds=True)
+
+
+def cleanup_old_versions():
+    """Yangilanishdan keyin qolib ketgan eski .exe nusxasini o'chiradi.
+    Ilova ishga tushganda chaqiriladi — o'shanda eski fayl endi band
+    emas. Xato chiqsa jim o'tkazib yuboriladi (bu shunchaki tozalash)."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        exe_path = os.path.abspath(sys.executable)
+        exe_dir = os.path.dirname(exe_path)
+        old_path = os.path.join(exe_dir, f"{_OLD_EXE_PREFIX}{os.path.basename(exe_path)}")
+        if os.path.exists(old_path):
+            os.remove(old_path)
+    except Exception:
+        pass

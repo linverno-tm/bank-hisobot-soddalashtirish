@@ -1003,6 +1003,7 @@ def _ensure_desktop_shortcut():
 def main():
     _enable_dpi_awareness()
     os.chdir(APP_DIR)
+    updater.cleanup_old_versions()
     _ensure_desktop_shortcut()
     app = App()
     app.mainloop()
