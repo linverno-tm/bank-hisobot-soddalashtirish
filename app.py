@@ -126,8 +126,11 @@ class UnresolvedDialog(tk.Toplevel):
             ttk.Entry(entry_row, textvariable=var, width=30).pack(side="left", padx=(6, 0))
             self.result_entries[key] = (info, var)
 
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
         footer = ttk.Frame(self, padding=10)
-        footer.pack(fill="x")
+        footer.pack(side="bottom", fill="x", before=canvas)
         ttk.Button(footer, text="Saqlash va davom etish", command=self._on_confirm).pack(side="right")
         ttk.Button(footer, text="Bekor qilish", command=self._on_cancel).pack(side="right", padx=(0, 8))
 
@@ -228,8 +231,11 @@ class GroupsManagerDialog(tk.Toplevel):
 
         self._render_rows()
 
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
         footer = ttk.Frame(self, padding=14)
-        footer.pack(fill="x")
+        footer.pack(side="bottom", fill="x", before=canvas_frame)
         ttk.Button(footer, text="Saqlash", style="Accent.TButton", command=self._save).pack(side="right")
         ttk.Button(footer, text="Yopish", command=self.destroy).pack(side="right", padx=(0, 8))
 
@@ -345,7 +351,7 @@ class CounterpartyPickerDialog(tk.Toplevel):
         tree_frame.pack(fill="both", expand=True, padx=14, pady=(8, 0))
 
         columns = ("check", "account", "mfo", "name", "sample")
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="none", height=16)
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="none", height=6)
         self.tree.heading("check", text="✓")
         self.tree.heading("account", text="Xisob raqam")
         self.tree.heading("mfo", text="МФО")
@@ -369,8 +375,11 @@ class CounterpartyPickerDialog(tk.Toplevel):
                 values=("☐", info["account"], info.get("mfo", ""), info["name"], info["sample"]),
             )
 
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
         footer = ttk.Frame(self, padding=14)
-        footer.pack(fill="x")
+        footer.pack(side="bottom", fill="x", before=tree_frame)
         ttk.Label(footer, text="Guruh nomi:").pack(side="left")
         self.cat_var = tk.StringVar()
         ttk.Entry(footer, textvariable=self.cat_var, width=22).pack(side="left", padx=(6, 14))
