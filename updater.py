@@ -27,7 +27,7 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "BankHisobotSoddalashtirish-Updater"
@@ -67,8 +67,15 @@ def _pick_asset(assets):
 
 
 def check_for_update(timeout=5):
-    """Returns (tag_name, asset_url, asset_name, release_notes) if a newer
-    version is published on GitHub, otherwise None. Never raises."""
+    """Tekshiradi va uchta holatdan birini qaytaradi (hech qachon xato
+    ko'tarmaydi):
+      - (tag_name, asset_url, asset_name, release_notes) — yangi versiya bor;
+      - False — tekshiruv muvaffaqiyatli o'tdi va eng oxirgi versiya
+        allaqachon o'rnatilgan;
+      - None — tekshirib bo'lmadi (dev muhiti, internet yo'q, GitHub javob
+        bermadi/limitga tushdi va h.k.) — bu holat "eng oxirgi versiya"
+        bilan ADASHTIRILMASLIGI kerak, aks holda haqiqiy xatolik chog'ida
+        foydalanuvchiga yolg'on "yangilanish yo'q" xabari ko'rsatiladi."""
     if not getattr(sys, "frozen", False):
         return None  # dev muhitida (python app.py) yangilanish tekshirilmaydi
     try:
@@ -83,11 +90,11 @@ def check_for_update(timeout=5):
 
     tag = str(data.get("tag_name") or "").strip()
     if not tag or not _is_newer(tag, APP_VERSION):
-        return None
+        return False
 
     asset = _pick_asset(data.get("assets") or [])
     if not asset:
-        return None
+        return None  # yangi tag bor-u, lekin yuklab bo'lmaydigan holat — xato sifatida ko'rsatamiz
     asset_url, asset_name = asset
     return tag, asset_url, asset_name, str(data.get("body") or "").strip()
 

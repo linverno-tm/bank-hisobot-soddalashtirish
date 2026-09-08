@@ -677,7 +677,15 @@ class App(tk.Tk):
                 if not getattr(sys, "frozen", False):
                     messagebox.showinfo("Yangilanish", "Yangilanishni tekshirish faqat build qilingan .exe versiyasida ishlaydi.")
                 else:
-                    messagebox.showinfo("Yangilanish", f"Sizda eng oxirgi versiya o'rnatilgan (v{updater.APP_VERSION}).")
+                    messagebox.showwarning(
+                        "Yangilanish",
+                        "Yangilanishni tekshirib bo'lmadi — internet yoki GitHub bilan bog'lanishda "
+                        "muammo bo'lishi mumkin. Birozdan so'ng qayta urinib ko'ring.",
+                    )
+            return
+        if result is False:
+            if verbose:
+                messagebox.showinfo("Yangilanish", f"Sizda eng oxirgi versiya o'rnatilgan (v{updater.APP_VERSION}).")
             return
         tag, asset_url, asset_name, notes = result
         dialog = UpdateAvailableDialog(self, tag, notes)
