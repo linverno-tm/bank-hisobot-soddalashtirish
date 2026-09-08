@@ -950,9 +950,43 @@ def _enable_dpi_awareness():
             pass
 
 
+def _ensure_desktop_shortcut():
+    """Ish stolida ilovaga yorliq bo'lmasa, avtomatik yaratadi — shunda
+    foydalanuvchi .exe faylni birinchi marta qayerdan ishga tushirgan
+    bo'lsa ham, keyingi safar uni ish stolidan topa oladi. Faqat build
+    qilingan .exe holatida ishlaydi; xato chiqsa ham ilova ishlashda
+    davom etadi (bu shunchaki qulaylik, kritik funksiya emas)."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        shortcut_path = os.path.join(desktop, "Bank hisobotini soddalashtirish.lnk")
+        if not os.path.isdir(desktop) or os.path.exists(shortcut_path):
+            return
+        target = os.path.abspath(sys.executable)
+        workdir = os.path.dirname(target)
+        ps_script = (
+            "$WshShell = New-Object -ComObject WScript.Shell; "
+            f'$Shortcut = $WshShell.CreateShortcut("{shortcut_path}"); '
+            f'$Shortcut.TargetPath = "{target}"; '
+            f'$Shortcut.WorkingDirectory = "{workdir}"; '
+            f'$Shortcut.IconLocation = "{target}"; '
+            "$Shortcut.Save()"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
 def main():
     _enable_dpi_awareness()
     os.chdir(APP_DIR)
+    _ensure_desktop_shortcut()
     app = App()
     app.mainloop()
 
