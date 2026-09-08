@@ -180,9 +180,11 @@ class GroupsManagerDialog(tk.Toplevel):
         ttk.Label(
             header,
             text=(
-                "Bu yerda ma'lum hisob raqam (ИНН) yoki kompaniya nomi qaysi guruh (kategoriya)ga "
-                "tegishli ekanini oldindan belgilab qo'yishingiz mumkin — fayl tashlanganda ilova "
-                "avtomatik shu guruhga ajratadi."
+                "Bu yerda hisob raqam yoki kompaniya nomi qaysi guruhga tegishli ekanini oldindan "
+                "belgilab qo'yishingiz mumkin. Bitta hisob raqam orqali turli maqsaddagi to'lovlar "
+                "o'tsa (masalan G'aznachilik: soliq, elektr...), \"To'lov maqsadi matni bo'yicha\" "
+                "variantini tanlab, matndan bir bo'lakni (masalan \"электр учун\") kiriting — "
+                "shunda ilova aynan shu matnli qatorlarni alohida guruhga ajratadi."
             ),
             wraplength=680, foreground="#666666", justify="left",
         ).pack(anchor="w", pady=(4, 0))
@@ -195,6 +197,9 @@ class GroupsManagerDialog(tk.Toplevel):
         type_row.pack(fill="x")
         ttk.Radiobutton(type_row, text="Xisob raqam bo'yicha", variable=self.new_type, value="account").pack(side="left")
         ttk.Radiobutton(type_row, text="Nomi bo'yicha", variable=self.new_type, value="name").pack(side="left", padx=(12, 0))
+        ttk.Radiobutton(
+            type_row, text="To'lov maqsadi matni bo'yicha", variable=self.new_type, value="text"
+        ).pack(side="left", padx=(12, 0))
 
         fields_row = ttk.Frame(add_box)
         fields_row.pack(fill="x", pady=(8, 0))
@@ -252,9 +257,15 @@ class GroupsManagerDialog(tk.Toplevel):
             self._add_row_widget(key, cat)
 
     def _add_row_widget(self, key, category):
-        is_name = key.startswith(categorize._NAME_KEY_PREFIX)
-        display_id = key[len(categorize._NAME_KEY_PREFIX):] if is_name else key
-        label_prefix = "Nomi: " if is_name else "Xisob raqam: "
+        if key.startswith(categorize._TEXT_KEY_PREFIX):
+            display_id = key[len(categorize._TEXT_KEY_PREFIX):]
+            label_prefix = "Matn: "
+        elif key.startswith(categorize._NAME_KEY_PREFIX):
+            display_id = key[len(categorize._NAME_KEY_PREFIX):]
+            label_prefix = "Nomi: "
+        else:
+            display_id = key
+            label_prefix = "Xisob raqam: "
 
         row = ttk.Frame(self.inner, padding=6, relief="groove", borderwidth=1)
         row.pack(fill="x", pady=3)
@@ -307,9 +318,15 @@ class GroupsManagerDialog(tk.Toplevel):
         ident = self.new_id_var.get().strip()
         cat = self.new_cat_var.get().strip()
         if not ident or not cat:
-            messagebox.showwarning("Diqqat", "ИНН/Nomi va Guruh nomini kiriting.")
+            messagebox.showwarning("Diqqat", "Xisob raqam / Nomi / Matn va Guruh nomini kiriting.")
             return
-        key = ident if self.new_type.get() == "account" else f"{categorize._NAME_KEY_PREFIX}{ident}"
+        kind = self.new_type.get()
+        if kind == "account":
+            key = ident
+        elif kind == "text":
+            key = f"{categorize._TEXT_KEY_PREFIX}{ident}"
+        else:
+            key = f"{categorize._NAME_KEY_PREFIX}{ident}"
         self.mapping[key] = cat
         categorize.save_all_mappings(self.mapping)
         self.new_id_var.set("")

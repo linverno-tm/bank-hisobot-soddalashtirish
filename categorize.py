@@ -119,6 +119,11 @@ _DICT_PATH = os.path.join(_base_dir(), "persist_dictionary.json")
 # it never collides with the (purely numeric) ИНН keys.
 KNOWN_VENDOR_NAME = {}
 _NAME_KEY_PREFIX = "NAME::"
+# Foydalanuvchi o'zi qo'shgan "to'lov maqsadi matni -> guruh" qoidalari.
+# Bitta hisob raqam orqali turli maqsaddagi to'lovlar o'tganda, ilovada
+# tayyor qoida bo'lmasa, foydalanuvchi shu yerga o'zi qoida qo'sha oladi.
+KNOWN_PURPOSE_TEXT = {}
+_TEXT_KEY_PREFIX = "TEXT::"
 
 
 def _load_persist_dict():
@@ -128,7 +133,9 @@ def _load_persist_dict():
     except FileNotFoundError:
         raw = {}
     for k, v in raw.items():
-        if isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
+        if isinstance(k, str) and k.startswith(_TEXT_KEY_PREFIX):
+            KNOWN_PURPOSE_TEXT[k[len(_TEXT_KEY_PREFIX):]] = v
+        elif isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
             KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
         else:
             KNOWN_VENDOR_INN[k] = v
@@ -154,7 +161,11 @@ def save_learned_category(identifier, name, category):
             raw = json.load(f)
     except FileNotFoundError:
         raw = {}
-    if identifier:
+    if identifier.startswith(_TEXT_KEY_PREFIX):
+        phrase = identifier[len(_TEXT_KEY_PREFIX):]
+        raw[identifier] = category
+        KNOWN_PURPOSE_TEXT[phrase] = category
+    elif identifier:
         raw[identifier] = category
         KNOWN_VENDOR_INN[identifier] = category
     else:
@@ -185,8 +196,11 @@ def save_all_mappings(mapping):
     KNOWN_VENDOR_INN.clear()
     KNOWN_VENDOR_INN.update(_BUILTIN_VENDOR_INN)
     KNOWN_VENDOR_NAME.clear()
+    KNOWN_PURPOSE_TEXT.clear()
     for k, v in mapping.items():
-        if isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
+        if isinstance(k, str) and k.startswith(_TEXT_KEY_PREFIX):
+            KNOWN_PURPOSE_TEXT[k[len(_TEXT_KEY_PREFIX):]] = v
+        elif isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
             KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
         else:
             KNOWN_VENDOR_INN[k] = v
@@ -263,6 +277,14 @@ def classify_row(op, name, text, inn, account=None):
 
     for rx, cat in PURPOSE_FIRST_RULES:
         if rx.search(text):
+            return cat, "high"
+
+    # Foydalanuvchi o'zi qo'shgan matn qoidalari — hisob raqamdan ustun
+    # turadi, chunki ular aynan shunday "bitta hisob raqam, ko'p maqsad"
+    # holatlarini qo'lda ajratish uchun kiritilgan.
+    text_low = text.lower()
+    for phrase, cat in KNOWN_PURPOSE_TEXT.items():
+        if phrase.lower() in text_low:
             return cat, "high"
 
     account = str(account).strip() if account else ""
