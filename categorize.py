@@ -184,7 +184,13 @@ def unique_counterparties(rows):
             continue
         key = account if account else f"{_NAME_KEY_PREFIX}{name}"
         if key not in parties:
-            parties[key] = {"account": account, "inn": inn, "name": name, "sample": str(r["purpose"] or "")[:200]}
+            parties[key] = {
+                "account": account,
+                "inn": inn,
+                "name": name,
+                "mfo": str(r.get("mfo") or "").strip(),
+                "sample": str(r["purpose"] or "")[:200],
+            }
     return parties
 
 
@@ -204,6 +210,7 @@ def find_unresolved(rows):
             "account": account,
             "inn": str(r["inn"]).strip() if r["inn"] else "",
             "name": name,
+            "mfo": str(r.get("mfo") or "").strip(),
             "sample": str(r["purpose"] or "")[:200],
             "count": 0,
         })

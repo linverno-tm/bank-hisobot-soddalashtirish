@@ -112,6 +112,8 @@ class UnresolvedDialog(tk.Toplevel):
                 label_bits.append(f"Xisob raqam {info['account']}")
             elif info.get("inn"):
                 label_bits.append(f"ИНН {info['inn']}")
+            if info.get("mfo"):
+                label_bits.append(f"МФО {info['mfo']}")
             label_bits.append(f"{info['count']} qatorda uchraydi")
             ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold")).pack(anchor="w")
             if info["sample"]:
@@ -342,16 +344,18 @@ class CounterpartyPickerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=14, pady=(8, 0))
 
-        columns = ("check", "account", "name", "sample")
+        columns = ("check", "account", "mfo", "name", "sample")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="none", height=16)
         self.tree.heading("check", text="✓")
         self.tree.heading("account", text="Xisob raqam")
+        self.tree.heading("mfo", text="МФО")
         self.tree.heading("name", text="Nomi")
         self.tree.heading("sample", text="Namuna matn")
         self.tree.column("check", width=36, anchor="center")
         self.tree.column("account", width=140, anchor="w")
-        self.tree.column("name", width=220, anchor="w")
-        self.tree.column("sample", width=420, anchor="w")
+        self.tree.column("mfo", width=80, anchor="w")
+        self.tree.column("name", width=200, anchor="w")
+        self.tree.column("sample", width=360, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Button-1>", self._on_click)
 
@@ -360,7 +364,10 @@ class CounterpartyPickerDialog(tk.Toplevel):
         self.tree.configure(yscrollcommand=scroll.set)
 
         for key, info in sorted(parties.items(), key=lambda kv: (kv[1]["name"] or kv[1]["account"]).lower()):
-            self.tree.insert("", "end", iid=key, values=("☐", info["account"], info["name"], info["sample"]))
+            self.tree.insert(
+                "", "end", iid=key,
+                values=("☐", info["account"], info.get("mfo", ""), info["name"], info["sample"]),
+            )
 
         footer = ttk.Frame(self, padding=14)
         footer.pack(fill="x")
