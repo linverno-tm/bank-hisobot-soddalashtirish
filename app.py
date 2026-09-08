@@ -405,48 +405,6 @@ class CounterpartyPickerDialog(tk.Toplevel):
         self.destroy()
 
 
-class UpdateAvailableDialog(tk.Toplevel):
-    """Yangi versiya topilganda ko'rsatiladigan tasdiqlash oynasi."""
-
-    def __init__(self, parent, tag, notes):
-        super().__init__(parent)
-        self.title("Yangi versiya topildi")
-        self.geometry("420x260")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.confirmed = False
-
-        body = ttk.Frame(self, padding=16)
-        body.pack(fill="both", expand=True)
-        ttk.Label(
-            body, text=f"Yangi versiya: {tag}", font=("Segoe UI Semibold", 12)
-        ).pack(anchor="w")
-        ttk.Label(
-            body,
-            text=f"O'rnatilgan versiya: v{updater.APP_VERSION}",
-            foreground="#666666",
-        ).pack(anchor="w", pady=(2, 10))
-        if notes:
-            text = tk.Text(body, height=6, wrap="word", relief="flat", background=self.cget("background"))
-            text.insert("1.0", notes[:800])
-            text.configure(state="disabled")
-            text.pack(fill="both", expand=True)
-
-        footer = ttk.Frame(self, padding=16)
-        footer.pack(fill="x")
-        ttk.Button(footer, text="Hozir yangilash", style="Accent.TButton", command=self._on_yes).pack(side="right")
-        ttk.Button(footer, text="Keyinroq", command=self._on_no).pack(side="right", padx=(0, 8))
-
-    def _on_yes(self):
-        self.confirmed = True
-        self.destroy()
-
-    def _on_no(self):
-        self.confirmed = False
-        self.destroy()
-
-
 class UpdateProgressDialog(tk.Toplevel):
     """Yangilanish yuklanayotganda ko'rsatiladigan progress oynasi."""
 
@@ -717,10 +675,14 @@ class App(tk.Tk):
                 messagebox.showinfo("Yangilanish", f"Sizda eng oxirgi versiya o'rnatilgan (v{updater.APP_VERSION}).")
             return
         tag, asset_url, asset_name, notes = result
-        dialog = UpdateAvailableDialog(self, tag, notes)
-        self.wait_window(dialog)
-        if dialog.confirmed:
-            self._start_update_download(asset_url, asset_name)
+        if self.is_running:
+            # Fayllar qayta ishlanayotganda ilovani majburan yopib
+            # qo'ymaslik uchun, yangilanishni hozircha kechiktiramiz —
+            # keyingi safar ochilganda yoki qo'lda tekshirilganda o'rnatiladi.
+            self._log(f"Yangi versiya ({tag}) topildi — joriy jarayon tugagach o'rnatiladi.")
+            return
+        self._log(f"Yangi versiya ({tag}) topildi, avtomatik yuklab olinmoqda...")
+        self._start_update_download(asset_url, asset_name)
 
     def _start_update_download(self, asset_url, asset_name):
         self._update_progress_dialog = UpdateProgressDialog(self)
