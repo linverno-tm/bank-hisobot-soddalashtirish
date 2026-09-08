@@ -447,7 +447,9 @@ class App(tk.Tk):
         self.title("SoddaHisobot")
         self._apply_dpi_scaling()
         self.geometry("960x680")
-        self.minsize(860, 580)
+        # Kichraytirilganda ham barcha tugmalar ko'rinib turadigan eng kichik
+        # o'lcham (ro'yxat va jurnal qisqaradi, tugmalar kesilmaydi).
+        self.minsize(780, 520)
 
         sv_ttk.set_theme("light")
         self._setup_fonts()
@@ -574,14 +576,46 @@ class App(tk.Tk):
         self.out_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Button(out_frame, text="💾 Papka tanlash...", command=self.pick_out_dir).pack(side="left")
 
+        # Jurnal va 3-qadam ichidagi tugmalar "pastdan" joylashtiriladi:
+        # pack side="bottom" bo'lgan elementlar o'z joyini birinchi bo'lib
+        # egallaydi, shuning uchun oyna kichraytirilganda ular kesilib
+        # qolmaydi — o'rniga yuqoridagi ro'yxat qisqaradi.
+        log_frame = ttk.LabelFrame(root, text="Jurnal", padding=(10, 6))
+        log_frame.pack(side="bottom", fill="x", pady=(10, 0))
+        self.log = tk.Text(
+            log_frame, height=4, wrap="word", state="disabled",
+            font=self.mono_font, relief="flat", borderwidth=0,
+            background="#f5f5f5" if sv_ttk.get_theme() == "light" else "#1e1e1e",
+        )
+        self.log.pack(fill="both", expand=True)
+
         step3 = self._step_frame(root, "3-qadam · Boshlang va kuzating")
         step3.pack(fill="both", expand=True)
+
+        action_row = ttk.Frame(step3)
+        action_row.pack(side="bottom", fill="x")
+        self.start_btn = ttk.Button(action_row, text="▶  Boshlash", style="Accent.TButton", command=self.start_processing)
+        self.start_btn.pack(side="left", ipadx=6)
+        self.open_out_btn = ttk.Button(action_row, text="📁 Papkani ochish", command=self.open_out_dir)
+        self.open_out_btn.pack(side="left", padx=(8, 0))
+        self.open_excel_btn = ttk.Button(action_row, text="📊 Excelda ochish", command=self.open_selected_in_excel)
+        self.open_excel_btn.pack(side="left", padx=(8, 0))
+        self.status_label = ttk.Label(action_row, text="Tayyor", font=self.step_font)
+        self.status_label.pack(side="right")
+
+        self.progress = ttk.Progressbar(step3, orient="horizontal", mode="determinate")
+        self.progress.pack(side="bottom", fill="x", pady=(0, 10))
+
+        ttk.Label(
+            step3, text="Tayyor bo'lgan faylni ochish uchun ustiga ikki marta bosing.",
+            foreground="#888888",
+        ).pack(side="bottom", anchor="w", pady=(0, 8))
 
         list_frame = ttk.Frame(step3)
         list_frame.pack(fill="both", expand=True, pady=(0, 10))
 
         columns = ("file", "status")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended", height=10)
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended", height=4)
         self.tree.heading("file", text="Fayl")
         self.tree.heading("status", text="Holati")
         self.tree.column("file", width=600, anchor="w", stretch=True)
@@ -597,33 +631,6 @@ class App(tk.Tk):
         self.tree.tag_configure("Ishlanmoqda...", foreground=self.STATUS_COLORS["Ishlanmoqda..."])
         self.tree.tag_configure("Tayyor", foreground=self.STATUS_COLORS["Tayyor"])
         self.tree.tag_configure("Xato", foreground=self.STATUS_COLORS["Xato"])
-        ttk.Label(
-            step3, text="Tayyor bo'lgan faylni ochish uchun ustiga ikki marta bosing.",
-            foreground="#888888",
-        ).pack(anchor="w", pady=(0, 8))
-
-        self.progress = ttk.Progressbar(step3, orient="horizontal", mode="determinate")
-        self.progress.pack(fill="x", pady=(0, 10))
-
-        action_row = ttk.Frame(step3)
-        action_row.pack(fill="x")
-        self.start_btn = ttk.Button(action_row, text="▶  Boshlash", style="Accent.TButton", command=self.start_processing)
-        self.start_btn.pack(side="left", ipadx=6)
-        self.open_out_btn = ttk.Button(action_row, text="📁 Papkani ochish", command=self.open_out_dir)
-        self.open_out_btn.pack(side="left", padx=(8, 0))
-        self.open_excel_btn = ttk.Button(action_row, text="📊 Excelda ochish", command=self.open_selected_in_excel)
-        self.open_excel_btn.pack(side="left", padx=(8, 0))
-        self.status_label = ttk.Label(action_row, text="Tayyor", font=self.step_font)
-        self.status_label.pack(side="right")
-
-        log_frame = ttk.LabelFrame(root, text="Jurnal", padding=(10, 6))
-        log_frame.pack(fill="both", pady=(10, 0))
-        self.log = tk.Text(
-            log_frame, height=7, wrap="word", state="disabled",
-            font=self.mono_font, relief="flat", borderwidth=0,
-            background="#f5f5f5" if sv_ttk.get_theme() == "light" else "#1e1e1e",
-        )
-        self.log.pack(fill="both", expand=True)
 
     # ------------------------------------------------------------ actions
     def pick_files(self):

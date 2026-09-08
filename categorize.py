@@ -23,6 +23,24 @@ def is_total_row(first_cell):
     return str(first_cell).strip().lower().startswith(TOTAL_ROW_MARKERS)
 
 
+# Bitta hisob raqam (masalan G'aznachilik / Молия вазирлиги hisobvarag'i)
+# orqali butunlay boshqa-boshqa maqsaddagi to'lovlar o'tadi: foyda solig'i,
+# QQS, elektr uchun to'lov... Shuning uchun bu qoidalar hisob raqam bo'yicha
+# o'rgatilgan guruhdan ham USTUN turadi — to'lov maqsadi (Назначение
+# платежа) matni bu yerda hal qiluvchi hisoblanadi.
+PURPOSE_FIRST_RULES = [
+    (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда"),
+    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик QQS"),
+    (re.compile(r"ижтимоий\s*соли[кқ]", re.I), "солик ижтимоий"),
+    (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад"),
+    (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия"),
+    (re.compile(r"сув\s*таъминоти|ичимлик\s*сув", re.I), "коммунал"),
+    (re.compile(r"табиий\s*газ|газ\s*учун", re.I), "коммунал"),
+    (re.compile(r"фойдаланилган\s*электр|электр\s*учун|электр\s*энергия", re.I), "коммунал"),
+    (re.compile(r"ижара\s*ту[лл]ови", re.I), "ижара"),
+]
+
+
 # Ordered keyword rules: (regex, category, confidence)
 # confidence 'high' = auto-apply, 'guess' = apply but flag for review
 TEXT_RULES = [
@@ -225,12 +243,21 @@ def classify_row(op, name, text, inn, account=None):
     Matching is done primarily by the counterparty's Xisob raqam (Счет).
     ИНН is kept as a secondary fallback so categories learned by older
     versions of this app (persist_dictionary.json entries keyed by ИНН)
-    keep working after this update."""
+    keep working after this update.
+
+    ISTISNO: PURPOSE_FIRST_RULES — bitta hisob raqam orqali turli xil
+    to'lovlar o'tadigan holatlar (G'aznachilik hisobvarag'i: foyda solig'i,
+    QQS, elektr uchun to'lov) uchun to'lov maqsadi matni hisob raqamdan
+    ustun turadi, aks holda hammasi bitta guruhga tushib qolardi."""
     name = name or ""
     text = text or ""
 
     if re.search(r"начисленные\s*%%", name, re.I):
         return "банк хизмати", "high"
+
+    for rx, cat in PURPOSE_FIRST_RULES:
+        if rx.search(text):
+            return cat, "high"
 
     account = str(account).strip() if account else ""
     inn = str(inn).strip() if inn else ""
