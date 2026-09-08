@@ -650,11 +650,21 @@ class App(tk.Tk):
         self.wait_window(dialog)
 
     # ------------------------------------------------------ auto-update
+    UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000  # 30 daqiqada bir marta
+
     def _check_update_background(self):
-        """Ilova ochilganda jimgina (xabarnomasiz) tekshiradi — internet
-        yo'q yoki yangilanish bo'lmasa, foydalanuvchiga hech narsa
-        ko'rinmaydi."""
+        """Jimgina (xabarnomasiz) tekshiradi — internet yo'q yoki
+        yangilanish bo'lmasa, foydalanuvchiga hech narsa ko'rinmaydi.
+        Yangilanish topilsa, so'ramasdan o'zi yuklab, o'rnatib, ilovani
+        qayta ishga tushiradi (_on_update_check_result orqali).
+
+        Ilova ochilganda BIR MARTA emas, balki shu yerdan o'zini qayta
+        rejalashtirib, doimiy ravishda har 30 daqiqada qayta tekshirib
+        turadi — shunda foydalanuvchi ilovani qayta ochib-yopmasa ham,
+        uzoq vaqt ochiq turgan nusxa ham yangilanishni o'tkazib
+        yubormaydi."""
         threading.Thread(target=self._run_update_check, args=(False,), daemon=True).start()
+        self.after(self.UPDATE_CHECK_INTERVAL_MS, self._check_update_background)
 
     def _check_update_manual(self):
         """'Yangilanishni tekshirish' tugmasi — natija har doim (topilmasa
