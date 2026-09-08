@@ -493,8 +493,37 @@ class App(tk.Tk):
         self.ui_queue = queue.Queue()
 
         self._build_ui()
+        self._last_state = self.state()
+        self.bind("<Configure>", self._on_root_configure)
         self.after(100, self._poll_queue)
         self.after(1500, self._check_update_background)
+
+    def _on_root_configure(self, event):
+        """Windowsda oyna maximize/restore qilinganda ba'zi ttk widget'lar
+        (ayniqsa sv_ttk kabi rasm asosida chiziladigan zamonaviy temalar)
+        darhol qayta chizilmay, qora "yamalgan" joylar ko'rinib qolishi
+        mumkin — bu Tk/DWM darajasidagi tanish nuqson, ilova mantig'iga
+        aloqasi yo'q. Oyna holati (normal/zoomed) chindan o'zgarganda butun
+        widget daraxtini majburan qayta chizib, shu nuqsonni oldini olamiz."""
+        if event.widget is not self:
+            return
+        try:
+            state = self.state()
+        except tk.TclError:
+            return
+        if state != self._last_state:
+            self._last_state = state
+            self.after(50, self._force_full_redraw)
+
+    def _force_full_redraw(self):
+        def redraw(widget):
+            widget.update_idletasks()
+            for child in widget.winfo_children():
+                redraw(child)
+        try:
+            redraw(self)
+        except tk.TclError:
+            pass
 
     # ---------------------------------------------------------- UI layout
     def _apply_dpi_scaling(self):
