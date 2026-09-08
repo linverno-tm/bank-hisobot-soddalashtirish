@@ -30,13 +30,19 @@ def is_total_row(first_cell):
 # платежа) matni bu yerda hal qiluvchi hisoblanadi.
 PURPOSE_FIRST_RULES = [
     (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда"),
-    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик QQS"),
+    # DIQQAT: bu yerda faqat aniq "Кушилган киймат солиги" iborasi tekshiriladi.
+    # Umumiy "НДС" so'zi ATAYLAB kiritilmagan — oddiy tovar to'lovlarida ham
+    # "Сумма ... В т.ч. НДС (12%) ..." deb yoziladi, va u paytda bu soliq
+    # to'lovi emas, balki narxning tarkibiy qismi. Umumiy "НДС" qoidasi
+    # quyida, past darajali TEXT_RULES ichida qoldirilgan.
+    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и", re.I), "солик QQS"),
     (re.compile(r"ижтимоий\s*соли[кқ]", re.I), "солик ижтимоий"),
     (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад"),
     (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия"),
     (re.compile(r"сув\s*таъминоти|ичимлик\s*сув", re.I), "коммунал"),
     (re.compile(r"табиий\s*газ|газ\s*учун", re.I), "коммунал"),
-    (re.compile(r"фойдаланилган\s*электр|электр\s*учун|электр\s*энергия", re.I), "коммунал"),
+    # Elektr alohida guruh — kommunalga qo'shilmaydi.
+    (re.compile(r"фойдаланилган\s*электр|электр\s*учун|электр\s*энергия", re.I), "электр"),
     (re.compile(r"ижара\s*ту[лл]ови", re.I), "ижара"),
 ]
 
@@ -60,7 +66,7 @@ TEXT_RULES = [
     # settlement text often mentions VAT only incidentally as a line item.
     (re.compile(r"оплата\s*100\s*%.*по\s*договору\s*публичная\s*оферта", re.I), "ф (aniqlanmagan)", "guess"),
     (re.compile(r"ижара\s*тулови|ижара\s*ту[лл]ови", re.I), "ижара", "guess"),
-    (re.compile(r"фойдаланилган\s*электр|электр\s*учун", re.I), "коммунал", "guess"),
+    (re.compile(r"фойдаланилган\s*электр|электр\s*учун", re.I), "электр", "guess"),
     (re.compile(r"консалтинг|konsalting", re.I), "хизмат", "guess"),
     (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда", "guess"),
     (re.compile(r"кушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик QQS", "guess"),
