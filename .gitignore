@@ -13,3 +13,4 @@ icon_preview.png
 .telemetry_key.txt
 telemetry/.wrangler/
 node_modules/
+ai_key.txt
