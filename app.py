@@ -443,12 +443,16 @@ class CounterpartyPickerDialog(tk.Toplevel):
 
 
 class UpdateProgressDialog(tk.Toplevel):
-    """Yangilanish yuklanayotganda ko'rsatiladigan progress oynasi."""
+    """Yangilanish jarayonini ko'rsatuvchi oyna.
 
-    def __init__(self, parent):
+    Foydalanuvchi nima bo'layotganini ko'rib turishi kerak: foiz, yuklab
+    olingan hajm va joriy bosqich. Aks holda ilova "qotib qolgandek"
+    tuyuladi va odam uni majburan yopib yuborishi mumkin."""
+
+    def __init__(self, parent, tag=""):
         super().__init__(parent)
         self.title("Yangilanmoqda...")
-        self.geometry("360x120")
+        self.geometry("420x170")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -456,12 +460,32 @@ class UpdateProgressDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=16)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Yangi versiya yuklanmoqda, biroz kuting...").pack(anchor="w", pady=(0, 10))
+
+        sarlavha = f"Yangi versiya yuklanmoqda{(' — ' + tag) if tag else ''}"
+        ttk.Label(body, text=sarlavha, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        self.step_label = ttk.Label(body, text="Ulanmoqda...", foreground="#666666")
+        self.step_label.pack(anchor="w", pady=(2, 10))
+
         self.bar = ttk.Progressbar(body, mode="determinate", maximum=100)
         self.bar.pack(fill="x")
 
-    def set_progress(self, pct):
+        info_row = ttk.Frame(body)
+        info_row.pack(fill="x", pady=(8, 0))
+        self.pct_label = ttk.Label(info_row, text="0%", font=("Segoe UI Semibold", 12))
+        self.pct_label.pack(side="left")
+        self.size_label = ttk.Label(info_row, text="", foreground="#666666")
+        self.size_label.pack(side="right")
+
+    def set_progress(self, pct, done=0, total=0):
         self.bar.configure(value=pct)
+        self.pct_label.configure(text=f"{pct}%")
+        if total:
+            mb = 1024 * 1024
+            self.size_label.configure(text=f"{done / mb:.1f} / {total / mb:.1f} MB")
+        self.step_label.configure(text="Yuklab olinmoqda...")
+
+    def set_step(self, text):
+        self.step_label.configure(text=text)
 
 
 class App(tk.Tk):
@@ -742,16 +766,16 @@ class App(tk.Tk):
             self._log(f"Yangi versiya ({tag}) topildi — joriy jarayon tugagach o'rnatiladi.")
             return
         self._log(f"Yangi versiya ({tag}) topildi, avtomatik yuklab olinmoqda...")
-        self._start_update_download(asset_url, asset_name)
+        self._start_update_download(asset_url, asset_name, tag)
 
-    def _start_update_download(self, asset_url, asset_name):
-        self._update_progress_dialog = UpdateProgressDialog(self)
+    def _start_update_download(self, asset_url, asset_name, tag=""):
+        self._update_progress_dialog = UpdateProgressDialog(self, tag)
 
         def worker():
             try:
                 def on_progress(done, total):
                     pct = int(done * 100 / total) if total else 0
-                    self.ui_queue.put(("update_progress", pct, None))
+                    self.ui_queue.put(("update_progress", pct, (done, total)))
                 updater.download_and_apply_update(asset_url, asset_name, progress_cb=on_progress)
                 self.ui_queue.put(("update_ready", None, None))
             except Exception as e:
@@ -964,9 +988,12 @@ class App(tk.Tk):
                     self._handle_scan_done(out_dir, unresolved)
                 elif kind == "update_progress":
                     if getattr(self, "_update_progress_dialog", None):
-                        self._update_progress_dialog.set_progress(a)
+                        done, total = b if b else (0, 0)
+                        self._update_progress_dialog.set_progress(a, done, total)
                 elif kind == "update_ready":
                     if getattr(self, "_update_progress_dialog", None):
+                        self._update_progress_dialog.set_step("O'rnatildi, qayta ishga tushmoqda...")
+                        self._update_progress_dialog.update_idletasks()
                         self._update_progress_dialog.destroy()
                     messagebox.showinfo(
                         "Yangilanish",
