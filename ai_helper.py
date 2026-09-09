@@ -31,7 +31,7 @@ GROUP_HINTS = {
     "банк хизмати": "bank komissiyasi, hisoblangan foizlar",
     "иш хаки ПК": "ish haqi, oylik to'lovi",
     "солик даромад": "jismoniy shaxs daromad solig'i",
-    "солик QQS": "qo'shilgan qiymat solig'i to'lovi",
+    "солик КҚС": "qo'shilgan qiymat solig'i to'lovi",
     "солик фойда": "foyda solig'i to'lovi",
     "солик ижтимоий": "ijtimoiy soliq",
     "солик пенсия": "pensiya jamg'armasiga badal",
