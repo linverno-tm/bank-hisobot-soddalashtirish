@@ -85,23 +85,40 @@ def run(src_path, out_path):
         if r["credit"]:
             totals[cat][1] += Decimal(str(r["credit"]))
 
-    # opening/closing balance, parsed from row 4 of the raw sheet
-    a4 = str(ws["A4"].value or "")
-    b4 = str(ws["B4"].value or "")
+    # Boshlang'ich/yakuniy qoldiq — "Остаток на начало/конец периода: ..."
+    # matnli katakdan olinadi. Bu katak formatga qarab har xil joyda
+    # turadi (A4 da yoki F4 da), shuning uchun ustun raqamiga tayanmasdan,
+    # dastlabki qatorlar orasidan mos matnni qidiramiz.
+    import re
 
     def parse_balance(s):
-        import re
-        m = re.search(r"([\d\s.,]+)$", s)
+        m = re.search(r"([\d\s\xa0]+[.,]\d+|[\d\s\xa0]+)\s*$", s)
         if not m:
             return None
-        t = m.group(1).replace(" ", "").replace("\xa0", "").replace(",", "")
+        # Bo'shliqlar (oddiy va uzilmas) — ming ajratuvchi, olib tashlanadi.
+        # Vergul — kasr ajratuvchi, NUQTAGA aylantiriladi (O'CHIRILMAYDI —
+        # avvalgi xato aynan shu yerda edi: vergulni butunlay o'chirib
+        # tashlash butun sonni buzib yuborardi: "511 258,38" -> (eski)
+        # "51125838" chiqar edi, to'g'risi 511258.38 bo'lishi kerak edi).
+        t = m.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
         try:
             return Decimal(t)
         except Exception:
             return None
 
-    open_bal = parse_balance(a4)
-    close_bal = parse_balance(b4)
+    open_bal = close_bal = None
+    for row in ws.iter_rows(min_row=1, max_row=min(10, ws.max_row)):
+        for cell in row:
+            text = str(cell.value or "")
+            if not text:
+                continue
+            low = text.lower()
+            if open_bal is None and "начало" in low:
+                open_bal = parse_balance(text)
+            if close_bal is None and "конец" in low:
+                close_bal = parse_balance(text)
+        if open_bal is not None and close_bal is not None:
+            break
 
     if "Лист1" in wb.sheetnames:
         del wb["Лист1"]
