@@ -29,7 +29,7 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.15.0"
+APP_VERSION = "99.0.0"  # SINOV NUSXASI: master relizlariga yangilanib, AI yo'qolib ketmasligi uchun ataylab yuqori
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "SoddaHisobot-Updater"
