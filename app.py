@@ -118,6 +118,8 @@ class UnresolvedDialog(tk.Toplevel):
             if info.get("mfo"):
                 label_bits.append(f"МФО {info['mfo']}")
             label_bits.append(f"{info['count']} qatorda uchraydi")
+            if info.get("always_ask"):
+                label_bits.append("HAR SAFAR SO'RALADI (ko'p maqsadli hisob)")
             ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold")).pack(anchor="w")
             if info["sample"]:
                 ttk.Label(row, text=info["sample"], foreground="#555", wraplength=680).pack(anchor="w")
@@ -204,14 +206,16 @@ class UnresolvedDialog(tk.Toplevel):
         self.destroy()
 
     def get_assignments(self):
-        """Returns list of (identifier, name, category) for entries the user
-        filled in. `identifier` is the counterparty's Xisob raqam (Счет)
-        when known, otherwise empty (name-based matching is used instead)."""
+        """Foydalanuvchi to'ldirgan qatorlarni qaytaradi.
+
+        Har bir element: (info, guruh). `info` ichida "always_ask" bayrog'i
+        bor — G'aznachilik kabi ko'p maqsadli kontragentlar uchun javob
+        diskka yozilmaydi, faqat shu faylga qo'llaniladi."""
         out = []
         for key, (info, var) in self.result_entries.items():
             cat = var.get().strip()
             if cat:
-                out.append((info.get("account") or "", info["name"], cat))
+                out.append((info, cat))
         return out
 
 
@@ -933,6 +937,9 @@ class App(tk.Tk):
             f.error = None
         self._refresh_tree()
 
+        # Oldingi fayllar uchun berilgan "faqat shu safar" javoblari
+        # yangi ishga o'tib ketmasin.
+        categorize.clear_session_overrides()
         self.is_running = True
         self.start_btn.configure(state="disabled")
         self.status_label.configure(text="Tekshirilmoqda...")
@@ -972,9 +979,22 @@ class App(tk.Tk):
                 self.status_label.configure(text="Tayyor")
                 return
             assignments = dialog.get_assignments()
-            for account, name, cat in assignments:
-                categorize.save_learned_category(account, name, cat)
-                self._log(f"Saqlandi: {name or account} -> {cat}")
+            for info, cat in assignments:
+                nomi = info.get("name") or info.get("account") or ""
+                if info.get("always_ask"):
+                    # G'aznachilik kabi kontragent: bugun soliq, ertaga
+                    # elektr bo'lishi mumkin. Shuning uchun diskka
+                    # yozmaymiz — javob faqat shu faylga tegishli va
+                    # keyingi safar yana so'raladi.
+                    categorize.set_session_override(
+                        info.get("account") or "", info.get("purpose") or "", cat
+                    )
+                    self._log(f"Shu fayl uchun: {nomi[:40]} -> {cat}")
+                else:
+                    categorize.save_learned_category(
+                        info.get("account") or "", info.get("name") or "", cat
+                    )
+                    self._log(f"Saqlandi: {nomi[:40]} -> {cat}")
         else:
             self._log("Nomlanmagan kontragent topilmadi.")
 

@@ -55,6 +55,48 @@ def looks_like_date(value):
 # QQS, elektr uchun to'lov... Shuning uchun bu qoidalar hisob raqam bo'yicha
 # o'rgatilgan guruhdan ham USTUN turadi — to'lov maqsadi (Назначение
 # платежа) matni bu yerda hal qiluvchi hisoblanadi.
+# G'aznachilik / Moliya vazirligi hisobvarag'i orqali butunlay har xil
+# maqsaddagi to'lovlar o'tadi: foyda solig'i, QQS, elektr, ijtimoiy soliq...
+# Shuning uchun bunday kontragentni HECH QACHON hisob raqam yoki nom
+# bo'yicha "o'rganib" qo'ymaymiz — aks holda bir marta "QQS" deb
+# belgilangach, keyingi barcha to'lovlar ham QQS bo'lib ketardi.
+#
+# Bunday qatorlar uchun tartib: avval to'lov maqsadi qoidalari (soliq
+# turi, elektr...) ishlaydi; ular topa olmasa — foydalanuvchidan
+# SO'RALADI, va javob faqat shu faylga tegishli bo'ladi.
+ALWAYS_ASK_NAME_RX = re.compile(
+    r"молия\s*вазирлиг|газначилиг|ягона\s*газна|казначейств",
+    re.I,
+)
+
+# Foydalanuvchi shu ish davomida bergan javoblar: (hisob, maqsad izi) -> guruh.
+# Diskka YOZILMAYDI — "doim so'ralsin" degani shu.
+SESSION_OVERRIDES = {}
+
+
+def purpose_signature(text):
+    """To'lov maqsadidan barqaror "iz" yasaydi: raqamlar, hujjat nomerlari
+    va ajratuvchilar olib tashlanadi, faqat ma'noli so'zlar qoladi.
+    Shunda "...~32 Фойда солиги учун олдиндан тулов" va boshqa hujjat
+    raqamli xuddi shu to'lov bitta savol sifatida ko'rinadi."""
+    t = re.sub(r"[\d~№/\\.,:;()-]+", " ", str(text or ""))
+    return " ".join(t.split()).lower()[:70]
+
+
+def is_always_ask(name, account=None):
+    """Kontragent ko'p maqsadli (har safar so'ralishi kerak) mi?"""
+    return bool(ALWAYS_ASK_NAME_RX.search(str(name or "")))
+
+
+def set_session_override(account, purpose, category):
+    """Foydalanuvchi javobini shu ish uchun eslab qoladi (diskka emas)."""
+    SESSION_OVERRIDES[(str(account or ""), purpose_signature(purpose))] = category
+
+
+def clear_session_overrides():
+    SESSION_OVERRIDES.clear()
+
+
 PURPOSE_FIRST_RULES = [
     (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда"),
     # DIQQAT: bu yerda faqat aniq "Кушилган киймат солиги" iborasi tekshiriladi.
@@ -62,7 +104,7 @@ PURPOSE_FIRST_RULES = [
     # "Сумма ... В т.ч. НДС (12%) ..." deb yoziladi, va u paytda bu soliq
     # to'lovi emas, balki narxning tarkibiy qismi. Umumiy "НДС" qoidasi
     # quyida, past darajali TEXT_RULES ichida qoldirilgan.
-    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и", re.I), "солик QQS"),
+    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и", re.I), "солик КҚС"),
     (re.compile(r"ижтимоий\s*соли[кқ]", re.I), "солик ижтимоий"),
     (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад"),
     (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия"),
@@ -91,12 +133,12 @@ TEXT_RULES = [
     # Finance-partner style wording ("Публичная оферта" + "ген соглашение"-like BNPL
     # contracts) is checked BEFORE the generic "НДС" substring rule, since a BNPL
     # settlement text often mentions VAT only incidentally as a line item.
-    (re.compile(r"оплата\s*100\s*%.*по\s*договору\s*публичная\s*оферта", re.I), "ф (aniqlanmagan)", "guess"),
+    (re.compile(r"оплата\s*100\s*%.*по\s*договору\s*публичная\s*оферта", re.I), "ф (аникланмаган)", "guess"),
     (re.compile(r"ижара\s*тулови|ижара\s*ту[лл]ови", re.I), "ижара", "guess"),
     (re.compile(r"фойдаланилган\s*электр|электр\s*учун", re.I), "электр", "guess"),
     (re.compile(r"консалтинг|konsalting", re.I), "хизмат", "guess"),
     (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда", "guess"),
-    (re.compile(r"кушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик QQS", "guess"),
+    (re.compile(r"кушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик КҚС", "guess"),
 ]
 
 GOODS_PURCHASE_HINT = re.compile(
@@ -153,6 +195,36 @@ KNOWN_PURPOSE_TEXT = {}
 _TEXT_KEY_PREFIX = "TEXT::"
 
 
+# Ilova avval ba'zi guruh nomlarini lotin harflari bilan yozardi
+# ("солик QQS", "Avto to'lov"). Hisobot butunlay kirillcha bo'lishi kerak,
+# shuning uchun nomlar o'zgartirildi. Foydalanuvchining eski yozuvlari
+# yo'qolib qolmasligi uchun ular ochilishda avtomatik ko'chiriladi.
+_LEGACY_GROUP_RENAMES = {
+    "солик QQS": "солик КҚС",
+    "ф (aniqlanmagan)": "ф (аникланмаган)",
+    "ARALASH": "АРАЛАШ",
+    "Click": "Клик",
+    "Avto to'lov": "Авто тулов",
+}
+
+
+def _migrate_legacy_groups():
+    """Diskdagi lug'atda eski (lotincha) guruh nomlari qolgan bo'lsa,
+    ularni yangi kirillcha nomlarga almashtiradi."""
+    try:
+        with open(_DICT_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return
+    yangi = {k: _LEGACY_GROUP_RENAMES.get(v, v) for k, v in raw.items()}
+    if yangi != raw:
+        try:
+            with open(_DICT_PATH, "w", encoding="utf-8") as f:
+                json.dump(yangi, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError:
+            pass
+
+
 def _load_persist_dict():
     try:
         with open(_DICT_PATH, "r", encoding="utf-8") as f:
@@ -168,6 +240,7 @@ def _load_persist_dict():
             KNOWN_VENDOR_INN[k] = v
 
 
+_migrate_legacy_groups()
 _load_persist_dict()
 
 
@@ -270,13 +343,21 @@ def find_unresolved(rows):
             continue
         account = str(r["account"]).strip() if r["account"] else ""
         name = str(r["name"] or "").strip()
-        key = account if account else f"{_NAME_KEY_PREFIX}{name}"
+        koʻp_maqsadli = is_always_ask(name, account)
+        if koʻp_maqsadli:
+            # Har bir maqsad alohida savol bo'lsin: bitta hisob raqamda
+            # soliq ham, elektr ham bo'lishi mumkin.
+            key = f"{account}|{purpose_signature(r['purpose'])}"
+        else:
+            key = account if account else f"{_NAME_KEY_PREFIX}{name}"
         entry = unresolved.setdefault(key, {
             "account": account,
             "inn": str(r["inn"]).strip() if r["inn"] else "",
             "name": name,
             "mfo": str(r.get("mfo") or "").strip(),
             "sample": str(r["purpose"] or "")[:200],
+            "always_ask": koʻp_maqsadli,
+            "purpose": str(r["purpose"] or ""),
             "count": 0,
         })
         entry["count"] += 1
@@ -302,6 +383,14 @@ def classify_row(op, name, text, inn, account=None):
     if re.search(r"начисленные\s*%%", name, re.I):
         return "банк хизмати", "high"
 
+    account_str = str(account).strip() if account else ""
+
+    # Foydalanuvchi shu ish davomida aynan shu to'lov uchun javob bergan
+    # bo'lsa — o'shani ishlatamiz.
+    sess = SESSION_OVERRIDES.get((account_str, purpose_signature(text)))
+    if sess:
+        return sess, "high"
+
     for rx, cat in PURPOSE_FIRST_RULES:
         if rx.search(text):
             return cat, "high"
@@ -314,7 +403,14 @@ def classify_row(op, name, text, inn, account=None):
         if phrase.lower() in text_low:
             return cat, "high"
 
-    account = str(account).strip() if account else ""
+    # Ko'p maqsadli kontragent (G'aznachilik) — hisob/nom bo'yicha
+    # o'rganilgan guruh QO'LLANMAYDI, chunki u har safar boshqa maqsadda
+    # bo'lishi mumkin. Yuqoridagi maqsad qoidalari ishlamagan bo'lsa,
+    # pastda "?" qaytadi va ilova foydalanuvchidan so'raydi.
+    if is_always_ask(name, account):
+        return "?", "review"
+
+    account = account_str
     inn = str(inn).strip() if inn else ""
     if account and account in KNOWN_VENDOR_INN:
         return KNOWN_VENDOR_INN[account], "high"
@@ -349,7 +445,7 @@ def propose_category_for_group(op_values, names, texts, inns, accounts=None):
     if len(cats) == 1:
         cat, conf = per_row[0]
         return cat, conf, per_row
-    return "ARALASH", "mixed", per_row
+    return "АРАЛАШ", "mixed", per_row
 
 
 # Ustunlarni JOYLASHUVI bo'yicha emas, SARLAVHA NOMI bo'yicha aniqlaymiz —
