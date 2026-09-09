@@ -29,7 +29,7 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "SoddaHisobot-Updater"
@@ -176,20 +176,56 @@ def download_and_apply_update(asset_url, asset_name, progress_cb=None):
     subprocess.Popen([exe_path], cwd=exe_dir, close_fds=True)
 
 
+# Ilovaning o'zi qanday nomlar bilan tarqalgan bo'lishi mumkin. Eski
+# nusxalarni topish uchun shu prefikslardan foydalanamiz.
+_APP_FILE_PREFIXES = ("soddahisobot", "bankhisobotsoddalashtirish")
+
+
 def cleanup_old_versions():
-    """Yangilanishdan keyin qolib ketgan eski .exe nusxasini o'chiradi.
-    Ilova ishga tushganda chaqiriladi — o'shanda eski fayl endi band
-    emas. Xato chiqsa jim o'tkazib yuboriladi (bu shunchaki tozalash)."""
+    """Ilova joylashgan papkadagi eski nusxalarni va yangilanishdan
+    qolgan vaqtinchalik fayllarni o'chiradi.
+
+    Ilova ochilganda chaqiriladi. Nega kerak: foydalanuvchi bir necha
+    marta qo'lda yuklab olsa, papkada "SoddaHisobot (1).exe",
+    "SoddaHisobot (2).exe" kabi eski nusxalar to'planib qoladi va
+    ish stoli yorlig'i eskisiga ishora qilib, "menda eski versiya
+    ko'rinyapti" degan chalkashlik chiqadi.
+
+    XAVFSIZLIK QOIDALARI (yangi nusxani xato o'chirib qo'ymaslik uchun):
+      - faqat ishlab turgan .exe joylashgan PAPKADAGI fayllar;
+      - faqat shu ilovaning nomiga o'xshash .exe fayllar;
+      - faqat ishlab turgan .exe dan ESKIROQ fayllar (o'zgartirilgan
+        vaqti bo'yicha) — yangiroq nusxaga tegilmaydi;
+      - ishlab turgan faylning o'ziga hech qachon tegilmaydi.
+    Xato chiqsa jim o'tkazib yuboriladi — bu shunchaki tozalash."""
     if not getattr(sys, "frozen", False):
         return
     try:
         exe_path = os.path.abspath(sys.executable)
         exe_dir = os.path.dirname(exe_path)
-        old_path = os.path.join(exe_dir, f"{_OLD_EXE_PREFIX}{os.path.basename(exe_path)}")
-        if os.path.exists(old_path):
-            os.remove(old_path)
+        exe_mtime = os.path.getmtime(exe_path)
     except Exception:
-        pass
+        return
+
+    for name in os.listdir(exe_dir):
+        full = os.path.join(exe_dir, name)
+        low = name.lower()
+        try:
+            if not os.path.isfile(full) or os.path.samefile(full, exe_path):
+                continue
+
+            # a) yangilanishdan qolgan vaqtinchalik fayllar
+            is_leftover = low.startswith(_OLD_EXE_PREFIX) or low.startswith("_update_")
+            # b) shu ilovaning eskiroq nusxasi
+            is_old_copy = (
+                low.endswith(".exe")
+                and any(low.startswith(pref) for pref in _APP_FILE_PREFIXES)
+                and os.path.getmtime(full) < exe_mtime
+            )
+            if is_leftover or is_old_copy:
+                os.remove(full)
+        except Exception:
+            continue  # band yoki ruxsat yo'q — tegmaymiz
 
 
 def send_ping():

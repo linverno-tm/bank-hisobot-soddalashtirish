@@ -1000,17 +1000,18 @@ def _enable_dpi_awareness():
 
 
 def _ensure_desktop_shortcut():
-    """Ish stolida ilovaga yorliq bo'lmasa, avtomatik yaratadi — shunda
-    foydalanuvchi .exe faylni birinchi marta qayerdan ishga tushirgan
-    bo'lsa ham, keyingi safar uni ish stolidan topa oladi. Faqat build
-    qilingan .exe holatida ishlaydi; xato chiqsa ham ilova ishlashda
-    davom etadi (bu shunchaki qulaylik, kritik funksiya emas)."""
+    """Ish stolidagi yorliqni HAR SAFAR joriy .exe ga yo'naltiradi.
+
+    Faqat "yo'q bo'lsa yaratish" yetarli emas edi: eski nusxa o'chirilsa
+    yoki ilova boshqa papkaga ko'chirilsa, yorliq ishlamay qolardi yoki
+    eski faylni ochib, "menda eski versiya" degan chalkashlik berardi.
+    Xato chiqsa ilova ishlashda davom etadi (bu shunchaki qulaylik)."""
     if not getattr(sys, "frozen", False):
         return
     try:
         desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
         shortcut_path = os.path.join(desktop, "SoddaHisobot.lnk")
-        if not os.path.isdir(desktop) or os.path.exists(shortcut_path):
+        if not os.path.isdir(desktop):
             return
         target = os.path.abspath(sys.executable)
         workdir = os.path.dirname(target)
