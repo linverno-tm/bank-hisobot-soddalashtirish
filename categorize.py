@@ -9,6 +9,7 @@ payment that happens to also flow through HUMO/Uzkassa/SmartVista rails.
 """
 import re
 import json
+import datetime
 import sys
 from collections import defaultdict
 from decimal import Decimal
@@ -21,6 +22,32 @@ def is_total_row(first_cell):
     if first_cell is None:
         return False
     return str(first_cell).strip().lower().startswith(TOTAL_ROW_MARKERS)
+
+
+# Sana ustuni "faqat sana"dan iboratmi? Hisobot oxirida bank qo'shimcha
+# qatorlar qo'shadi: "Обороты по дебету: кол-во 8", "Исходящий остаток на
+# 31.08.2026", bank nomi/manzili va h.k. Ular operatsiya emas, lekin
+# ustunlarida summa turgani uchun avval oddiy qator deb o'qilib, "?"
+# nomsiz kontragent sifatida so'ralib qolardi.
+#
+# Kalit so'z ro'yxatiga tayanmaymiz (har bankda har xil yoziladi) —
+# o'rniga tuzilmaga tayanamiz: HAQIQIY operatsiya qatorida sana ustuni
+# TOZA sana bo'ladi. "Исходящий остаток на 31.08.2026" ichida sana bor,
+# lekin butun katak sana emas — shuning uchun to'liq moslik talab qilinadi.
+_DATE_ONLY_RX = re.compile(
+    r"^\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}"      # 03.08.2026 / 3-8-26
+    r"(?:[\s,]+\d{1,2}:\d{2}(?::\d{2})?)?"       # ixtiyoriy vaqt
+    r"(?:\.\d+)?\s*$"                             # ixtiyoriy mikrosoniya
+)
+
+
+def looks_like_date(value):
+    """Katak butunlay sanadan iboratmi (matn ichidagi sana emas)."""
+    if value is None or value == "":
+        return False
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return True
+    return bool(_DATE_ONLY_RX.match(str(value)))
 
 
 # Bitta hisob raqam (masalan G'aznachilik / Молия вазирлиги hisobvarag'i)
@@ -441,7 +468,12 @@ def load_raw_rows(path, sheet_name=None):
         vals = [c.value for c in row]
         if not vals or all(v is None for v in vals):
             continue
-        if is_total_row(get(vals, "date")):
+        date_val = get(vals, "date")
+        if is_total_row(date_val):
+            continue
+        # Sana ustuni toza sana bo'lmasa — bu jadval oxiridagi yakuniy
+        # ma'lumot qatori (jami aylanma, chiqish qoldig'i, bank manzili).
+        if not looks_like_date(date_val):
             continue
 
         account_raw = get(vals, "account")

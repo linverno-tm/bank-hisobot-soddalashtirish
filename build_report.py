@@ -17,6 +17,7 @@ hisob raqam nom bilan bitta katakda turadi) — ustunlar nomi bo'yicha
 aniqlanadi, categorize.load_raw_rows ga qarang.
 """
 import os
+import re
 import sys
 import json
 from decimal import Decimal
@@ -48,6 +49,79 @@ def _writable_cell(ws, row, col):
         if (rng.min_row <= row <= rng.max_row) and (rng.min_col <= col <= rng.max_col):
             return ws.cell(row=rng.min_row, column=rng.min_col)
     return None
+
+
+# Boshlang'ich/yakuniy qoldiq turli banklarda turlicha yoziladi:
+#   "Остаток на начало периода: 511 258,38"   -> raqam matn ichida
+#   "Входящий остаток на 01.08.2026:  135 491 685,73"
+#   "Исходящий остаток на 31.08.2026"          -> raqam ALOHIDA katakda
+# Ustun/qator raqamiga tayanib bo'lmaydi (A4, B4, F4, H25 ... hammasi
+# uchraydi), shuning uchun kalit ibora bo'yicha qatorni topamiz.
+_OPEN_BALANCE_WORDS = ("входящий остаток", "остаток на начало", "начальный остаток")
+_CLOSE_BALANCE_WORDS = ("исходящий остаток", "остаток на конец", "конечный остаток")
+
+
+def _parse_balance_number(text):
+    """Matndan pul summasini ajratadi. FAQAT ikki nuqta (":") dan keyingi
+    qismga qaraydi — aks holda "Исходящий остаток на 31.08.2026" dagi
+    sana raqam deb o'qilib ketardi."""
+    if ":" not in text:
+        return None
+    tail = text.rsplit(":", 1)[1]
+    m = re.search(r"([\d\s\xa0]+[.,]\d+|[\d\s\xa0]+)\s*$", tail)
+    if not m:
+        return None
+    # Bo'shliqlar (oddiy va uzilmas) — ming ajratuvchi, olib tashlanadi.
+    # Vergul — kasr ajratuvchi, NUQTAGA aylantiriladi (o'chirilmaydi:
+    # "511 258,38" -> 511258.38, aks holda 51125838 bo'lib ketardi).
+    t = m.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
+    try:
+        return Decimal(t)
+    except Exception:
+        return None
+
+
+def _find_balances(ws):
+    """Varaqdan boshlang'ich va yakuniy qoldiqni topadi.
+
+    Kataklar birma-bir tekshiriladi (qator emas), chunki ba'zi
+    hisobotlarda IKKALA qoldiq ham BITTA qatorda turadi (A4 da
+    boshlang'ich, F4 da yakuniy), boshqalarida esa har xil qatorda va
+    raqam butunlay boshqa katakda bo'ladi (A25 da yozuv, H25 da son)."""
+    open_bal = close_bal = None
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            low = str(cell.value or "").strip().lower()
+            if not low:
+                continue
+            if any(w in low for w in _OPEN_BALANCE_WORDS):
+                kind = "open"
+            elif any(w in low for w in _CLOSE_BALANCE_WORDS):
+                kind = "close"
+            else:
+                continue
+            if (kind == "open" and open_bal is not None) or \
+               (kind == "close" and close_bal is not None):
+                continue
+
+            # 1) Raqam yozuvning o'zida bo'lishi mumkin
+            value = _parse_balance_number(str(cell.value))
+            # 2) Bo'lmasa — shu qatordagi alohida raqamli katakdan
+            if value is None:
+                for other in row:
+                    if isinstance(other.value, (int, float)):
+                        value = Decimal(str(other.value))
+                        break
+            if value is None:
+                continue
+
+            if kind == "open":
+                open_bal = value
+            else:
+                close_bal = value
+        if open_bal is not None and close_bal is not None:
+            break
+    return open_bal, close_bal
 
 
 def run(src_path, out_path):
@@ -85,40 +159,7 @@ def run(src_path, out_path):
         if r["credit"]:
             totals[cat][1] += Decimal(str(r["credit"]))
 
-    # Boshlang'ich/yakuniy qoldiq — "Остаток на начало/конец периода: ..."
-    # matnli katakdan olinadi. Bu katak formatga qarab har xil joyda
-    # turadi (A4 da yoki F4 da), shuning uchun ustun raqamiga tayanmasdan,
-    # dastlabki qatorlar orasidan mos matnni qidiramiz.
-    import re
-
-    def parse_balance(s):
-        m = re.search(r"([\d\s\xa0]+[.,]\d+|[\d\s\xa0]+)\s*$", s)
-        if not m:
-            return None
-        # Bo'shliqlar (oddiy va uzilmas) — ming ajratuvchi, olib tashlanadi.
-        # Vergul — kasr ajratuvchi, NUQTAGA aylantiriladi (O'CHIRILMAYDI —
-        # avvalgi xato aynan shu yerda edi: vergulni butunlay o'chirib
-        # tashlash butun sonni buzib yuborardi: "511 258,38" -> (eski)
-        # "51125838" chiqar edi, to'g'risi 511258.38 bo'lishi kerak edi).
-        t = m.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
-        try:
-            return Decimal(t)
-        except Exception:
-            return None
-
-    open_bal = close_bal = None
-    for row in ws.iter_rows(min_row=1, max_row=min(10, ws.max_row)):
-        for cell in row:
-            text = str(cell.value or "")
-            if not text:
-                continue
-            low = text.lower()
-            if open_bal is None and "начало" in low:
-                open_bal = parse_balance(text)
-            if close_bal is None and "конец" in low:
-                close_bal = parse_balance(text)
-        if open_bal is not None and close_bal is not None:
-            break
+    open_bal, close_bal = _find_balances(ws)
 
     if "Лист1" in wb.sheetnames:
         del wb["Лист1"]
