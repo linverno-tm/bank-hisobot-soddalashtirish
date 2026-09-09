@@ -29,7 +29,7 @@ import zipfile
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 GITHUB_REPO = "linverno-tm/bank-hisobot-soddalashtirish"
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _USER_AGENT = "SoddaHisobot-Updater"
@@ -176,9 +176,14 @@ def download_and_apply_update(asset_url, asset_name, progress_cb=None):
     subprocess.Popen([exe_path], cwd=exe_dir, close_fds=True)
 
 
-# Ilovaning o'zi qanday nomlar bilan tarqalgan bo'lishi mumkin. Eski
-# nusxalarni topish uchun shu prefikslardan foydalanamiz.
-_APP_FILE_PREFIXES = ("soddahisobot", "bankhisobotsoddalashtirish")
+# Ilova turli nomlar bilan tarqalgan: "SoddaHisobot.exe" (hozirgi) va
+# "BankHisobotSoddalashtirish.exe" (eski). Foydalanuvchi qo'lda qayta
+# nomlagan yoki Windows nusxa yaratgan bo'lishi ham mumkin. Shuning
+# uchun nom BOSHIni emas, ICHIDAGI o'zakni qidiramiz — bu "Bank hisobot
+# soddalashtirish (2).exe" kabi variantlarni ham tanib oladi.
+# O'zaklar loyihaga xos so'zlardan iborat, shuning uchun boshqa dastur
+# nomiga tasodifan to'g'ri kelib qolish ehtimoli yo'q.
+_APP_FILE_STEMS = ("soddahisobot", "hisobotsoddalash")
 
 
 def cleanup_old_versions():
@@ -217,9 +222,14 @@ def cleanup_old_versions():
             # a) yangilanishdan qolgan vaqtinchalik fayllar
             is_leftover = low.startswith(_OLD_EXE_PREFIX) or low.startswith("_update_")
             # b) shu ilovaning eskiroq nusxasi
+            # Nomni normallashtiramiz: bo'shliq, chiziqcha, pastki chiziq va
+            # qavslar olib tashlanadi. Shunda "Bank hisobot soddalashtirish
+            # (2).exe", "SoddaHisobot - Copy.exe", "soddahisobot_1.exe" kabi
+            # variantlar ham tanilib qoladi.
+            flat = "".join(ch for ch in low if ch.isalnum())
             is_old_copy = (
                 low.endswith(".exe")
-                and any(low.startswith(pref) for pref in _APP_FILE_PREFIXES)
+                and any(stem in flat for stem in _APP_FILE_STEMS)
                 and os.path.getmtime(full) < exe_mtime
             )
             if is_leftover or is_old_copy:
