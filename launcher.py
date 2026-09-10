@@ -38,6 +38,9 @@ BRANCH_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./"
 )
 
+# Notepad va PowerShell UTF-8 faylni shu ko'rinmas belgi bilan boshlaydi.
+BOM = chr(0xFEFF)
+
 # Yuklangan matn haqiqiy core.py ekanini tasdiqlovchi belgilar. Yarim
 # yuklangan yoki GitHub'ning xato sahifasi (HTML) bajarilib ketmasin.
 SANITY_MARKERS = ("def main(", "CORE_VERSION")
@@ -67,7 +70,12 @@ def _branch():
     d = _cache_dir()
     if not d:
         return DEFAULT_BRANCH
-    nom = (_from_file(os.path.join(d, BRANCH_FILE)) or "").strip()
+    nom = _from_file(os.path.join(d, BRANCH_FILE)) or ""
+    # Notepad ham, PowerShell ham UTF-8 faylni ko'rinmas BOM belgisi
+    # bilan boshlaydi — branch.txt qo'lda yaratilgani uchun deyarli doim
+    # shunday bo'ladi. Tashlab yubormasak, nom tanilmay master'ga
+    # qaytardi va sinov rejimi jimgina ishlamasdi.
+    nom = nom.lstrip(BOM).strip().strip('"').strip()
     if not nom or ".." in nom or nom.startswith((".", "/")):
         return DEFAULT_BRANCH
     if not set(nom) <= BRANCH_CHARS:
