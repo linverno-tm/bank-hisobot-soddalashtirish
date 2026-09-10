@@ -5,7 +5,12 @@ name: Build va Release (Windows .exe)
 # Windows runner'da PyInstaller bilan .exe yasaydi, uni O'QING.txt va
 # bo'sh persist_dictionary.json bilan birga zip qiladi, so'ng shu tag
 # nomi bilan GitHub Release yaratib, ikkalasini (.exe va .zip) unga
-# biriktiradi. Ilovadagi updater.py aynan shu Release'ni tekshiradi.
+# biriktiradi.
+#
+# .exe ga launcher.py yig'iladi — core.py emas. Launcher core.py ni har
+# ishga tushganda GitHub'dan oladi, shuning uchun kundalik tuzatishlar
+# uchun bu workflow'ni ishga tushirish SHART EMAS: git push kifoya.
+# Yangi release faqat launcher.py o'zgarganda kerak bo'ladi.
 
 on:
   push:
@@ -33,9 +38,25 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Launcher faqat standart kutubxonani import qiladi, core.py esa
+      # exec() ichida bajariladi — PyInstaller uning import'larini
+      # ko'rmaydi. Shuning uchun core.py ning har bir bog'liqligi shu
+      # yerda qo'lda ko'rsatilgan, aks holda .exe da ModuleNotFoundError
+      # chiqadi. core.py ga yangi kutubxona qo'shilsa, shu ro'yxatga ham
+      # qo'shib, .exe ni qayta yig'ish kerak.
       - name: .exe yasash (PyInstaller)
-        run: |
-          pyinstaller --onefile --windowed --name SoddaHisobot --icon app_icon.ico app.py
+        run: >
+          pyinstaller --onefile --windowed
+          --name SoddaHisobot --icon app_icon.ico
+          --add-data "core.py;."
+          --collect-all openpyxl
+          --collect-all sv_ttk
+          --hidden-import tkinter
+          --hidden-import tkinter.ttk
+          --hidden-import tkinter.font
+          --hidden-import tkinter.filedialog
+          --hidden-import tkinter.messagebox
+          launcher.py
 
       - name: Paketlash (exe + O'QING.txt + bo'sh dictionary)
         shell: pwsh

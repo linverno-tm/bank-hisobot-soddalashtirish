@@ -102,8 +102,11 @@ def _save_cache(source):
         pass
 
 
-def _run(source, manba):
-    """Matnni modulga aylantirib, main() ni chaqiradi."""
+def _load(source):
+    """Matnni modulga aylantiradi va main() ni qaytaradi — lekin HALI
+    chaqirmaydi. Shu bosqichda sintaksis xatolari, yo'q kutubxonalar va
+    modul darajasidagi xatolar aniqlanadi. Ya'ni "kod ishga yaroqlimi"
+    degan savolga javob shu yerda olinadi."""
     module = types.ModuleType("core")
     module.__dict__["__file__"] = _cache_path() or _bundled_path()
     exec(compile(source, "core.py", "exec"), module.__dict__)
@@ -111,7 +114,12 @@ def _run(source, manba):
     if not callable(main):
         raise RuntimeError("core.py ichida main() topilmadi")
     sys.modules["core"] = module
-    main()
+    return main
+
+
+def _run(source, manba):
+    """Kodni yuklab, ishga tushiradi."""
+    _load(source)()
 
 
 def _show_error(matn):
@@ -138,14 +146,20 @@ def main():
         yangi = None
 
     if _is_valid(yangi):
-        _save_cache(yangi)
         try:
-            _run(yangi, "internet")
-            return
+            core_main = _load(yangi)
         except Exception:
-            # Yangi kod buzuq bo'lsa (push'da xato) — ilova butunlay
-            # ishlamay qolmasligi uchun ishlagan nusxaga qaytamiz.
-            pass
+            # Yangi kod buzuq (push'da xato): keshga TEGMAYMIZ, aks holda
+            # oxirgi ishlagan nusxa ham yo'qolib, foydalanuvchi eski
+            # zaxiraga tushib qolardi.
+            core_main = None
+        if core_main is not None:
+            # Kod yuklanishga yarokli ekani tasdiqlandi — endi keshni
+            # yangilaymiz. Shundan keyingi xatolar (interfeys ichida)
+            # keshga ta'sir qilmaydi.
+            _save_cache(yangi)
+            core_main()
+            return
 
     # 2) Keshdagi oxirgi ishlagan nusxa
     keshdagi = _from_file(_cache_path())
