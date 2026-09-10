@@ -166,6 +166,19 @@ def clear_session_overrides():
 
 
 PURPOSE_FIRST_RULES = [
+    # Soliqdan QAYTGAN summa — bu soliq to'lovi emas, qaytimi. Ro'yxatning
+    # eng boshida turadi, chunki matnda "ПНФЛ"/"даромад солиги" ham
+    # uchraydi va quyidagi qoidalar uni oddiy soliq to'lovi deb olib
+    # qo'yardi. Faqat "возврат" so'ziga qaramaymiz: yetkazib beruvchidan
+    # tovar qaytarilganda ham shu so'z ishlatiladi, shuning uchun soliq
+    # belgisi (ГНИ, ПНФЛ, солик, бюджет) ham talab qilinadi.
+    (
+        re.compile(
+            r"(?=.*возврат)(?=.*(?:пнфл|гни|нало[гж]|соли[кқгғ]|бюджет))",
+            re.I | re.S,
+        ),
+        "ДСИ",
+    ),
     (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда"),
     # DIQQAT: bu yerda faqat aniq "Кушилган киймат солиги" iborasi tekshiriladi.
     # Umumiy "НДС" so'zi ATAYLAB kiritilmagan — oddiy tovar to'lovlarida ham
@@ -197,6 +210,9 @@ TEXT_RULES = [
     (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад", "high"),
     (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия", "high"),
     (re.compile(r"сорж", re.I), "СОРЖ", "high"),
+    # JNS LABS faqat shu xizmatni ko'rsatadi — umumiy "хизмат" guruhiga
+    # qo'shilmasin, alohida qator bo'lib chiqsin.
+    (re.compile(r"ароматизац|jns\s*labs", re.I), "ароматизация", "high"),
     # Lower confidence guesses (new patterns not seen in the DDD reference file yet).
     # Finance-partner style wording ("Публичная оферта" + "ген соглашение"-like BNPL
     # contracts) is checked BEFORE the generic "НДС" substring rule, since a BNPL
