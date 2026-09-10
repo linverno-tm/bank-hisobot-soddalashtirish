@@ -35,3 +35,27 @@ $clients | ForEach-Object {
 } | Format-Table -AutoSize
 
 Write-Host ("Hozir (UZT): " + $nowUtc.AddHours(5).ToString("dd.MM.yyyy HH:mm")) -ForegroundColor DarkGray
+
+# Foydalanuvchilarda yuz bergan xatolar. Bularsiz "menda ishlamadi" degan
+# gapni faqat telefonda tekshirish mumkin edi.
+try {
+    $xatolar = (Invoke-RestMethod "https://soddahisobot-telemetry.tasks-bot.workers.dev/xatolar?key=$key").errors
+} catch {
+    $xatolar = @()
+}
+
+if ($xatolar.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Oxirgi xatolar:" -ForegroundColor Yellow
+    $xatolar | Select-Object -First 10 | ForEach-Object {
+        $utc = [datetime]::Parse($_.vaqt, $null, $style)
+        [pscustomobject]@{
+            Qachon    = $utc.AddHours(5).ToString("dd.MM HH:mm")
+            Kompyuter = $_.host
+            Versiya   = $_.version
+            Xato      = ($_.xato -replace "\s+", " ").Substring(0, [Math]::Min(90, $_.xato.Length))
+        }
+    } | Format-Table -AutoSize -Wrap
+} else {
+    Write-Host "Xatolar yo'q." -ForegroundColor DarkGray
+}

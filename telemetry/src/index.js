@@ -74,6 +74,35 @@ export default {
       return json({ clients: results });
     }
 
+    if (request.method === "POST" && url.pathname === "/xato") {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "invalid json" }, 400);
+      }
+      const host = String(body.host || "").slice(0, 100) || "noma'lum";
+      const version = String(body.version || "").slice(0, 20) || "?";
+      const xato = String(body.xato || "").slice(0, 1000);
+      if (!xato) return json({ error: "bo'sh" }, 400);
+
+      await env.DB.prepare(
+        `INSERT INTO errors (host, version, xato, vaqt) VALUES (?1, ?2, ?3, ?4)`
+      ).bind(host, version, xato, new Date().toISOString()).run();
+
+      return json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/xatolar") {
+      if (url.searchParams.get("key") !== env.STATUS_KEY) {
+        return json({ error: "forbidden" }, 403);
+      }
+      const { results } = await env.DB.prepare(
+        `SELECT host, version, xato, vaqt FROM errors ORDER BY id DESC LIMIT 50`
+      ).all();
+      return json({ errors: results });
+    }
+
     if (request.method === "POST" && url.pathname === "/ai") {
       return await aiProxy(request, env);
     }

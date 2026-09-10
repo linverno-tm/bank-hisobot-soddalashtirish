@@ -56,7 +56,38 @@ SOURCE_BRANCH = globals().get("SOURCE_BRANCH", "master")
 # Ilova ochilganda faqat kompyuter nomi va versiyani yuboradi — bu
 # "kimda qaysi kod ishlab turibdi" degan savolga javob berish uchun.
 _PING_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/ping"
+_ERROR_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/xato"
 _USER_AGENT = "SoddaHisobot-Core"
+
+
+def send_error(xato):
+    """Yuz bergan xatoni serverga xabar qiladi. Alohida oqimda chaqiriladi.
+
+    Nima uchun: telemetriya kim qaysi versiyada ekanini aytadi, lekin
+    ilova foydalanuvchida yiqilsa bu hech qayerda ko'rinmasdi —
+    "menda ishlamadi" degan gapni telefonda tekshirishga to'g'ri kelardi.
+
+    Faqat xato matni yuboriladi, fayl yo'llari va hisobot mazmuni emas."""
+    try:
+        payload = json.dumps({
+            "host": platform.node() or "noma'lum",
+            "version": CORE_VERSION,
+            "xato": str(xato)[:1000],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _ERROR_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5).close()
+    except Exception:
+        pass
+
+
+def report_error(xato):
+    """Xabarni fon oqimida yuboradi — interfeys kutib qolmasin."""
+    threading.Thread(target=send_error, args=(xato,), daemon=True).start()
 
 
 def send_ping():
@@ -1010,7 +1041,29 @@ def build_simplified_report(src_path, out_path):
         "review_count": review_count,
         "total_debet": total_debet,
         "total_kredit": total_kredit,
+        "balans_farqi": _balance_mismatch(open_bal, close_bal, total_debet, total_kredit),
     }
+
+
+def _balance_mismatch(open_bal, close_bal, total_debet, total_kredit):
+    """Bank o'zi yozgan qoldiqlar bilan hisoblangan aylanma mos keladimi.
+
+    Tenglik: boshlang'ich + kredit - debet = yakuniy. Bu bankning o'z
+    raqamlari bilan bizning o'qiganimizni solishtiradi, ya'ni qatorlar
+    tushib qolgani yoki ikki marta hisoblangani darhol bilinadi.
+
+    Nima uchun kerak: bunday xato hisobotni jimgina buzadi — fayl
+    chiroyli ko'rinadi, jami chiqadi, lekin raqamlar noto'g'ri bo'ladi.
+    Ko'z bilan sezib bo'lmaydi.
+
+    Qaytaradi: farq (Decimal) yoki None — qoldiqlar topilmasa tekshirib
+    bo'lmaydi, bu xato emas (ba'zi hisobotlarda ular umuman yo'q)."""
+    if open_bal is None or close_bal is None:
+        return None
+    kutilgan = Decimal(str(open_bal)) + total_kredit - total_debet
+    farq = kutilgan - Decimal(str(close_bal))
+    # Tiyin darajasidagi yaxlitlash farqi xato emas.
+    return farq if abs(farq) > Decimal("0.01") else Decimal(0)
 
 
 
@@ -1982,6 +2035,10 @@ class App(tk.Tk):
         self.ui_queue = queue.Queue()
         self._last_wrap_width = 0
 
+        # Tkinter ushlanmagan xatoni odatda konsolga yozadi, grafik ilovada
+        # esa konsol yo'q — xato butunlay ko'rinmay ketardi.
+        self.report_callback_exception = self._on_unhandled
+
         self._build_ui()
         self._last_state = self.state()
         self.bind("<Configure>", self._on_root_configure)
@@ -1995,6 +2052,19 @@ class App(tk.Tk):
         )
         self.after(100, self._poll_queue)
         threading.Thread(target=send_ping, daemon=True).start()
+
+    def _on_unhandled(self, tur, qiymat, iz):
+        matn = "".join(traceback.format_exception(tur, qiymat, iz))[-900:]
+        report_error(matn)
+        self._log(f"KUTILMAGAN XATO: {qiymat}")
+        try:
+            messagebox.showerror(
+                "Xato",
+                f"Kutilmagan xato yuz berdi:\n\n{qiymat}\n\n"
+                "Xabar dasturchiga yuborildi. Ilovani qayta ochib ko'ring.",
+            )
+        except Exception:
+            pass
 
     def _on_root_configure(self, event):
         """Windowsda oyna maximize/restore qilinganda ba'zi ttk widget'lar
@@ -2395,6 +2465,7 @@ class App(tk.Tk):
     def _worker(self, out_dir):
         done_ok = 0
         done_err = 0
+        balans_xato = []
         for idx, f in enumerate(self.files):
             self.ui_queue.put(("status", idx, "Ishlanmoqda...", None))
             base = os.path.splitext(os.path.basename(f.path))[0]
@@ -2409,14 +2480,27 @@ class App(tk.Tk):
                     f"({info['review_count']} ta tekshirish bandi)",
                     None,
                 ))
+                farq = info.get("balans_farqi")
+                if farq:
+                    # Bankning o'z qoldig'i bilan hisoblangan aylanma mos
+                    # kelmadi — demak qatorlar tushib qolgan yoki ikki
+                    # marta hisoblangan. Jimgina o'tkazib yubormaymiz.
+                    balans_xato.append(os.path.basename(f.path))
+                    self.ui_queue.put((
+                        "log", None,
+                        f"DIQQAT: {os.path.basename(f.path)} — bank qoldig'i bilan "
+                        f"aylanma mos kelmadi, farq {farq}",
+                        None,
+                    ))
                 done_ok += 1
             except Exception as e:
                 err = "".join(traceback.format_exception_only(type(e), e)).strip()
                 self.ui_queue.put(("status", idx, "Xato", err))
                 self.ui_queue.put(("log", None, f"XATO: {os.path.basename(f.path)} -> {err}", None))
+                report_error(f"fayl qayta ishlashda: {err}")
                 done_err += 1
             self.ui_queue.put(("progress", idx + 1, None, None))
-        self.ui_queue.put(("done", done_ok, done_err, None))
+        self.ui_queue.put(("done", done_ok, done_err, balans_xato))
 
     def _poll_queue(self):
         # Navbatni oxirigacha bo'shatmaymiz. Ishlov paytida ishchi oqim
@@ -2429,7 +2513,7 @@ class App(tk.Tk):
         navbatda_bor = True
         try:
             for _ in range(50):
-                kind, a, b, _c = self.ui_queue.get_nowait()
+                kind, a, b, c = self.ui_queue.get_nowait()
                 if kind == "status":
                     idx, status = a, b
                     self.files[idx].status = status
@@ -2460,6 +2544,16 @@ class App(tk.Tk):
                         )
                     else:
                         messagebox.showinfo("Tugadi", f"Barcha {ok} ta fayl muvaffaqiyatli qayta ishlandi.{tip}")
+                    # Balans nazorati alohida ogohlantiriladi: fayl "tayyor"
+                    # bo'lib ko'rinadi, lekin raqamlariga ishonib bo'lmaydi.
+                    if c:
+                        messagebox.showwarning(
+                            "Balans mos kelmadi",
+                            "Quyidagi fayllarda bank ko'rsatgan qoldiq bilan hisoblangan "
+                            "aylanma mos kelmadi:\n\n" + "\n".join(f"  • {n}" for n in c) +
+                            "\n\nBu odatda ba'zi qatorlar o'qilmaganini bildiradi. "
+                            "Natijani ishlatishdan oldin tekshiring.",
+                        )
         except queue.Empty:
             navbatda_bor = False
         self.after(10 if navbatda_bor else 100, self._poll_queue)

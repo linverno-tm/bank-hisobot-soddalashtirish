@@ -10,6 +10,17 @@ CREATE TABLE IF NOT EXISTS clients (
 -- AI so'rovlarining kunlik sanog'i. Faqat SON saqlanadi — so'rov matnida
 -- kontragent nomlari va to'lov izohlari bo'lgani uchun ular hech qayerga
 -- yozilmaydi.
+-- Foydalanuvchida yuz bergan xatolar. Ilova yiqilsa yoki fayl qayta
+-- ishlanmasa, buni bilishning boshqa yo'li yo'q — "menda ishlamadi"
+-- degan gapni telefonda tekshirishga to'g'ri kelardi.
+CREATE TABLE IF NOT EXISTS errors (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  host     TEXT NOT NULL,
+  version  TEXT NOT NULL,
+  xato     TEXT NOT NULL,
+  vaqt     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ai_usage (
   kun   TEXT NOT NULL,
   host  TEXT NOT NULL,

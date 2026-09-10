@@ -50,8 +50,11 @@ def namuna_yasash(yol):
     ws.cell(2, 1, "Сведения о работе счета c 01.08.2026 по 31.08.2026")
     ws.cell(3, 1, "Счет: 20218000900961686001")
     ws.cell(3, 6, "SINOV TASHKILOTI")
+    # Qoldiqlar aylanma bilan mos bo'lishi shart:
+    #   1 000 + 1 300 000 (kredit) - 720 000 (debet) = 581 000
+    # Balans nazorati aynan shu tenglikni tekshiradi.
     ws.cell(4, 1, "Остаток на начало периода: 1 000,00")
-    ws.cell(4, 6, "Остаток на конец периода: 2 000,00")
+    ws.cell(4, 6, "Остаток на конец периода: 581 000,00")
 
     sarlavhalar = ["Дата", "Счет", "№ док", "Оп", "МФО",
                    "Оборот Дебет", "Оборот Кредит", "Назначение платежа"]
@@ -128,6 +131,10 @@ def main():
             xatolar.append(f"kredit yig'indisi: {jami_qator[1]} != {kategoriya_kredit}")
         if jami_qator[0] != info["total_debet"] or jami_qator[1] != info["total_kredit"]:
             xatolar.append("Лист1 yig'indisi hisoblangan jami bilan mos emas")
+
+    # 3) Balans nazorati: bank ko'rsatgan qoldiqlar bilan aylanma mos kelsin
+    if info.get("balans_farqi") != Decimal(0):
+        xatolar.append(f"balans nazorati: farq {info.get('balans_farqi')}, 0 kutilgan edi")
 
     if xatolar:
         print("XATO:")
