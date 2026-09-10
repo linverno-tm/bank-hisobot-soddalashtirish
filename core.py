@@ -1027,6 +1027,66 @@ class FileRow:
 AI_MODEL = "gemini-3-flash-preview"
 _AI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 _AI_KEY_FILE = "ai_key.txt"
+_AI_RULES_FILE = "ai_qollanma.txt"
+
+# Foydalanuvchi ai_qollanma.txt ni birinchi marta ochganda nima yozishni
+# bilishi uchun namuna. Fayl yo'q bo'lsa shu mazmun bilan yaratiladi.
+_AI_RULES_TEMPLATE = """\
+# AI uchun ko'rsatmalar. Har qatorga bitta qoida, oddiy tilda yozing.
+# Ilova har ochilganda shu fayl o'qiladi — qayta o'rnatish shart emas.
+# "#" bilan boshlangan qatorlar e'tiborga olinmaydi.
+#
+# Namunalar (kerak bo'lsa o'chirib, o'zingiznikini yozing):
+# ORZUIM MCHJ har doim хизмат guruhiga kirsin, tovar emas.
+# Matnda "аренда банкомата" bo'lsa - ижара.
+# Nomida "МИБ" bo'lsa hech qachon МЕБ dema.
+"""
+
+
+def ai_rules_paths():
+    yollar = [os.path.join(_base_dir(), _AI_RULES_FILE)]
+    lokal = os.environ.get("LOCALAPPDATA")
+    if lokal:
+        yollar.append(os.path.join(lokal, "SoddaHisobot", _AI_RULES_FILE))
+    return yollar
+
+
+def ai_extra_rules():
+    """Foydalanuvchi qo'lda yozgan ko'rsatmalar.
+
+    Nima uchun alohida fayl: guruhga oid har bir yangi holat uchun kodni
+    o'zgartirib, qayta chiqarish kerak bo'lmasin. Foydalanuvchi o'zi
+    ko'rgan xatoni darhol yozib qo'yadi va keyingi ochilishda AI shuni
+    hisobga oladi.
+
+    Qaytaradi: (matn, qoidalar_soni)."""
+    for yol in ai_rules_paths():
+        try:
+            with open(yol, encoding="utf-8-sig") as f:
+                xom = f.read()
+        except OSError:
+            continue
+        qatorlar = [
+            q.strip() for q in xom.splitlines()
+            if q.strip() and not q.strip().startswith("#")
+        ]
+        if qatorlar:
+            return "\n".join(f"- {q}" for q in qatorlar), len(qatorlar)
+    return "", 0
+
+
+def ensure_ai_rules_file():
+    """Qo'llanma fayli yo'q bo'lsa, namuna bilan yaratadi — foydalanuvchi
+    uni topib, to'ldirishi uchun. Qaytaradi: fayl yo'li."""
+    yol = ai_rules_paths()[-1]
+    if not os.path.exists(yol):
+        try:
+            os.makedirs(os.path.dirname(yol), exist_ok=True)
+            with open(yol, "w", encoding="utf-8") as f:
+                f.write(_AI_RULES_TEMPLATE)
+        except OSError:
+            pass
+    return yol
 
 # Guruh nomlari qisqartma bo'lgani uchun AI ularni o'zicha tushunmaydi.
 # Sinov shuni ko'rsatdi: izohsiz "Шахрихон туман МИБ" (Majburiy Ijro
@@ -1088,6 +1148,15 @@ def _ai_prompt(items, groups):
         {"id": i, "nomi": str(it.get("name") or "")[:60], "matn": str(it.get("sample") or "")[:200]}
         for i, it in enumerate(items)
     ]
+    qollanma, _ = ai_extra_rules()
+    # Foydalanuvchi ko'rsatmalari eng oxirida va "ustun turadi" deb
+    # beriladi: ular aynan AI xato qilgan holatlar uchun yozilgan,
+    # shuning uchun umumiy ta'riflardan kuchliroq bo'lishi kerak.
+    qollanma_blok = (
+        f"\nFOYDALANUVCHI KO'RSATMALARI — bular yuqoridagi umumiy "
+        f"ta'riflardan USTUN turadi:\n{qollanma}\n"
+        if qollanma else ""
+    )
     return (
         "Sen O'zbekiston buxgalteriyasida bank ko'chirmalarini guruhlarga ajratasan.\n\n"
         f"MAVJUD GURUHLAR: {sorted(groups)}\n\n"
@@ -1097,7 +1166,8 @@ def _ai_prompt(items, groups):
         "- O'xshash qisqartmalarni chalkashtirma: \"МИБ\" (Majburiy Ijro Byurosi) bu \"МЕБ\" EMAS.\n"
         "- Tovar sotib olish (texnika, transport, aloqa vositasi, xo'jalik mollari) -> МЕБ\n"
         "- Ishonching past bo'lsa yoki mos guruh bo'lmasa \"?\" yoz. "
-        "Noto'g'ri taxmindan ko'ra \"?\" yaxshiroq.\n\n"
+        "Noto'g'ri taxmindan ko'ra \"?\" yaxshiroq.\n"
+        f"{qollanma_blok}\n"
         "Javobni JSON massiv sifatida qaytar:\n"
         '[{"id":0,"guruh":"...","ishonch":"yuqori|past","sabab":"qisqa izoh"}]\n\n'
         f"Qatorlar:\n{json.dumps(rows, ensure_ascii=False, indent=1)}"
@@ -1160,6 +1230,35 @@ def ai_known_groups():
     )
 
 
+def enable_mousewheel(toplevel, canvas):
+    """Sichqoncha g'ildiragi bilan aylantirishni yoqadi.
+
+    tk.Canvas g'ildirak hodisasini O'ZI eshitmaydi — qo'lda ulash kerak,
+    aks holda faqat yon tarafdagi chiziqni sichqoncha bilan tortish
+    qoladi.
+
+    Bog'lash TOPLEVEL ga qilinadi, canvas'ga emas: Tk'da hodisa
+    widget -> klass -> toplevel -> "all" zanjiri bo'ylab tarqaladi,
+    shuning uchun kursor ichki widget (yorliq, kiritish maydoni) ustida
+    turganda ham ishlaydi. Canvas'ning o'ziga bog'lansa, kursor biror
+    yorliq ustiga tushishi bilan g'ildirak ishlamay qolardi."""
+
+    def on_wheel(event):
+        # Windows'da event.delta 120 ning karrali (bir "tirqish" = 120).
+        canvas.yview_scroll(-int(event.delta / 120), "units")
+        return "break"
+
+    def on_x11_wheel(yonalish):
+        def handler(_event):
+            canvas.yview_scroll(yonalish, "units")
+            return "break"
+        return handler
+
+    toplevel.bind("<MouseWheel>", on_wheel)         # Windows / macOS
+    toplevel.bind("<Button-4>", on_x11_wheel(-1))   # X11: yuqoriga
+    toplevel.bind("<Button-5>", on_x11_wheel(1))    # X11: pastga
+
+
 class UnresolvedDialog(tk.Toplevel):
     """Modal oyna: hisobotlarda kategoriyasi aniqlanmagan (nomlanmagan)
     kontragentlar ro'yxatini ko'rsatadi va har biri uchun nom/kategoriya
@@ -1199,6 +1298,7 @@ class UnresolvedDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
         scrollbar.pack(side="left", fill="y", pady=(0, 10))
+        enable_mousewheel(self, canvas)
 
         for key, info in sorted(unresolved.items(), key=lambda kv: -kv[1]["count"]):
             row = ttk.Frame(inner, padding=6, relief="groove", borderwidth=1)
@@ -1261,6 +1361,11 @@ class UnresolvedDialog(tk.Toplevel):
             )
             return
 
+        # Fayl birinchi ochilishda namuna bilan yaratiladi, aks holda
+        # foydalanuvchi uni qayerga yozishni bilmaydi.
+        ensure_ai_rules_file()
+        _, self._qollanma_soni = ai_extra_rules()
+
         self._ai_status.configure(text="AI takliflari so'ralmoqda...")
         items = [self.result_entries[k][0] for k in self._row_order]
         guruhlar = ai_known_groups()
@@ -1303,12 +1408,19 @@ class UnresolvedDialog(tk.Toplevel):
             belgi = "AI" if data.get("ishonch") == "yuqori" else "AI (ishonch past)"
             self._hint_labels[key].configure(text=f"{belgi} · {data.get('sabab', '')[:60]}")
             qollandi += 1
+        # Qo'llanmadagi qoidalar soni ko'rsatiladi — foydalanuvchi yozgan
+        # ko'rsatma haqiqatan o'qilganini shundan biladi.
+        qollanma = (
+            f"  |  qo'llanma: {self._qollanma_soni} ta qoida"
+            if getattr(self, "_qollanma_soni", 0) else
+            f"  |  qo'llanma bo'sh ({os.path.basename(ai_rules_paths()[-1])})"
+        )
         if qollandi:
             self._ai_status.configure(
-                text=f"AI {qollandi} ta taklif berdi — tekshirib, kerak bo'lsa o'zgartiring."
+                text=f"AI {qollandi} ta taklif berdi — tekshirib, kerak bo'lsa o'zgartiring.{qollanma}"
             )
         else:
-            self._ai_status.configure(text="AI mos taklif topa olmadi.")
+            self._ai_status.configure(text=f"AI mos taklif topa olmadi.{qollanma}")
 
     def _on_confirm(self):
         self.confirmed = True
@@ -1409,6 +1521,7 @@ class GroupsManagerDialog(tk.Toplevel):
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
+        enable_mousewheel(self, self.canvas)
 
         self._render_rows()
 
