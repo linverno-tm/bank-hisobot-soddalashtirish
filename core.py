@@ -996,6 +996,35 @@ class FileRow:
         self.out_path = None
 
 
+def enable_mousewheel(toplevel, canvas):
+    """Sichqoncha g'ildiragi bilan aylantirishni yoqadi.
+
+    tk.Canvas g'ildirak hodisasini O'ZI eshitmaydi — qo'lda ulash kerak,
+    aks holda faqat yon tarafdagi chiziqni sichqoncha bilan tortish
+    qoladi.
+
+    Bog'lash TOPLEVEL ga qilinadi, canvas'ga emas: Tk'da hodisa
+    widget -> klass -> toplevel -> "all" zanjiri bo'ylab tarqaladi,
+    shuning uchun kursor ichki widget (yorliq, kiritish maydoni) ustida
+    turganda ham ishlaydi. Canvas'ning o'ziga bog'lansa, kursor biror
+    yorliq ustiga tushishi bilan g'ildirak ishlamay qolardi."""
+
+    def on_wheel(event):
+        # Windows'da event.delta 120 ning karrali (bir "tirqish" = 120).
+        canvas.yview_scroll(-int(event.delta / 120), "units")
+        return "break"
+
+    def on_x11_wheel(yonalish):
+        def handler(_event):
+            canvas.yview_scroll(yonalish, "units")
+            return "break"
+        return handler
+
+    toplevel.bind("<MouseWheel>", on_wheel)         # Windows / macOS
+    toplevel.bind("<Button-4>", on_x11_wheel(-1))   # X11: yuqoriga
+    toplevel.bind("<Button-5>", on_x11_wheel(1))    # X11: pastga
+
+
 class UnresolvedDialog(tk.Toplevel):
     """Modal oyna: hisobotlarda kategoriyasi aniqlanmagan (nomlanmagan)
     kontragentlar ro'yxatini ko'rsatadi va har biri uchun nom/kategoriya
@@ -1005,11 +1034,18 @@ class UnresolvedDialog(tk.Toplevel):
     def __init__(self, parent, unresolved):
         super().__init__(parent)
         self.title("Nomlanmagan kontragentlar topildi")
-        self.geometry("760x520")
-        self.minsize(600, 420)
+        # Qatorlarda nom, hisob raqam, МФО va to'lov izohi bir yo'lda
+        # keladi — tor oynada ular o'ngdan kesilib qolardi. Ekran ruxsat
+        # berganicha keng ochamiz, lekin ekrandan chiqib ketmasin.
+        kengligi = min(1180, max(760, self.winfo_screenwidth() - 160))
+        balandligi = min(780, max(520, self.winfo_screenheight() - 200))
+        self.geometry(f"{kengligi}x{balandligi}")
+        self.minsize(680, 460)
         self.transient(parent)
         self.grab_set()
         self.result_entries = {}  # key -> (info, tk.StringVar)
+        self._wrap_labels = []    # oyna kengligiga qarab o'raladigan yozuvlar
+        self._last_wrap = 0
         self.confirmed = False
 
         header = ttk.Frame(self, padding=10)
@@ -1029,10 +1065,12 @@ class UnresolvedDialog(tk.Toplevel):
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
         scrollbar.pack(side="left", fill="y", pady=(0, 10))
+        enable_mousewheel(self, canvas)
+        canvas.bind("<Configure>", lambda e: self._fit_width(canvas, inner_id, e.width))
 
         for key, info in sorted(unresolved.items(), key=lambda kv: -kv[1]["count"]):
             row = ttk.Frame(inner, padding=6, relief="groove", borderwidth=1)
@@ -1050,9 +1088,14 @@ class UnresolvedDialog(tk.Toplevel):
             label_bits.append(f"{info['count']} qatorda uchraydi")
             if info.get("always_ask"):
                 label_bits.append("HAR SAFAR SO'RALADI (ko'p maqsadli hisob)")
-            ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold")).pack(anchor="w")
+            sarlavha = ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold"),
+                                 justify="left")
+            sarlavha.pack(anchor="w", fill="x")
+            self._wrap_labels.append(sarlavha)
             if info["sample"]:
-                ttk.Label(row, text=info["sample"], foreground="#555", wraplength=680).pack(anchor="w")
+                izoh = ttk.Label(row, text=info["sample"], foreground="#555", justify="left")
+                izoh.pack(anchor="w", fill="x")
+                self._wrap_labels.append(izoh)
 
             entry_row = ttk.Frame(row)
             entry_row.pack(fill="x", pady=(4, 0))
@@ -1070,6 +1113,24 @@ class UnresolvedDialog(tk.Toplevel):
         ttk.Button(footer, text="Bekor qilish", command=self._on_cancel).pack(side="right", padx=(0, 8))
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _fit_width(self, canvas, inner_id, kenglik):
+        """Ro'yxatni oyna kengligiga moslaydi.
+
+        Ikki ish qilinadi: ichki freym canvas kengligiga cho'ziladi (aks
+        holda u o'z tabiiy kengligida qolib, o'ng tomoni ko'rinmay
+        qolardi) va uzun yozuvlar shu kenglikda o'raladi — kesilmaydi.
+
+        Kenglik sezilarli o'zgarmasa tegilmaydi: wraplength o'zgarishi
+        yozuv balandligini o'zgartiradi, u esa yangi hodisa keltirib
+        chiqaradi — oyna cho'zilayotganda bu halqa sekinlashtirardi."""
+        canvas.itemconfigure(inner_id, width=kenglik)
+        if abs(kenglik - self._last_wrap) < 8:
+            return
+        self._last_wrap = kenglik
+        wrap = max(320, kenglik - 48)
+        for lbl in self._wrap_labels:
+            lbl.configure(wraplength=wrap)
 
     def _on_confirm(self):
         self.confirmed = True
@@ -1170,6 +1231,7 @@ class GroupsManagerDialog(tk.Toplevel):
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
+        enable_mousewheel(self, self.canvas)
 
         self._render_rows()
 
