@@ -12,5 +12,9 @@ error_log.txt
 icon_preview.png
 .telemetry_key.txt
 ai_key.txt
+# Haqiqiy bank hisobotlari va ulardan olingan etalon raqamlar — mijozning
+# moliyaviy ma'lumoti, ochiq repozitoriyaga chiqmasligi kerak.
+sinov/
+tests/golden/
 telemetry/.wrangler/
 node_modules/
