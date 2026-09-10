@@ -1,0 +1,32 @@
+name: Sinov
+
+# Har push'da ishlaydi. Sabab: kod GitHub'dan yuklanadi, ya'ni master'ga
+# qilingan push darhol barcha foydalanuvchiga boradi — buzuq qoida
+# hisobotni jimgina noto'g'ri chiqarishi mumkin va buni hech kim sezmaydi.
+#
+# Haqiqiy bank fayllari bilan ishlaydigan tests/golden.py bu yerda
+# ishlamaydi: u fayllar mijozning moliyaviy ma'lumoti va ochiq
+# repozitoriyada turmaydi. Shuning uchun tests/sintetik.py kod bilan
+# yasalgan namuna faylni ishlatadi.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  sinov:
+    # Windows kerak: core.py winreg va tkinter ni import qiladi.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Kutubxonalar
+        run: pip install -r requirements.txt
+
+      - name: Sintetik sinov
+        run: python tests/sintetik.py
