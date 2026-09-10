@@ -45,7 +45,7 @@ import sv_ttk
 
 # Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
-CORE_VERSION = "2.0.0"
+CORE_VERSION = "2.0.2"
 
 # Ilova ochilganda faqat kompyuter nomi va versiyani yuboradi — bu
 # "kimda qaysi kod ishlab turibdi" degan savolga javob berish uchun.
@@ -1388,12 +1388,18 @@ class App(tk.Tk):
         self.minsize(780, 520)
 
         sv_ttk.set_theme("light")
+        # Oyna kattalashtirilganda Windows yangi ochilgan bo'sh joyni
+        # widget'lar chizilgunicha oyna fonи bilan to'ldiradi. Tk'ning
+        # standart foni tema fonidan farq qilgani uchun shu lahzada qora
+        # yoki kulrang yo'l ko'rinib qolardi — fonni temaga tenglashtiramiz.
+        self.configure(background="#fafafa")
         self._setup_fonts()
 
         self.files = []  # list[FileRow]
         self.out_dir = tk.StringVar(value="")
         self.is_running = False
         self.ui_queue = queue.Queue()
+        self._last_wrap_width = 0
 
         self._build_ui()
         self._last_state = self.state()
@@ -1424,12 +1430,13 @@ class App(tk.Tk):
             self.after(50, self._force_full_redraw)
 
     def _force_full_redraw(self):
-        def redraw(widget):
-            widget.update_idletasks()
-            for child in widget.winfo_children():
-                redraw(child)
+        # update_idletasks butun ilovadagi kutayotgan chizish ishlarini
+        # bajaradi — qaysi widget'dan chaqirilishidan qat'i nazar. Avval
+        # bu butun daraxt bo'ylab rekursiv chaqirilardi, ya'ni yuzlab
+        # marta takrorlanardi va maximize paytida ko'zga ko'rinarli
+        # qotish berardi. Bitta chaqiruv yetarli.
         try:
-            redraw(self)
+            self.update_idletasks()
         except tk.TclError:
             pass
 
@@ -1460,6 +1467,15 @@ class App(tk.Tk):
     def _on_root_resize(self, event):
         # Tavsif matni oyna torayganda so'zma-so'z pastga tushib
         # ("wrap" bo'lib) yozilsin — bitta uzun qatorda kesilib qolmasin.
+        #
+        # wraplength o'zgarishi label balandligini o'zgartiradi, u esa
+        # yangi <Configure> hodisasini keltirib chiqaradi. Kenglik
+        # o'zgarmagan bo'lsa hech narsa qilmaymiz — aks holda oyna
+        # cho'zilayotganda shu halqa sekundiga o'nlab marta aylanib,
+        # ilova "qotgandek" sekinlashardi.
+        if abs(event.width - self._last_wrap_width) < 8:
+            return
+        self._last_wrap_width = event.width
         try:
             self.subtitle_label.configure(wraplength=max(300, event.width - 28))
         except Exception:
@@ -1664,6 +1680,13 @@ class App(tk.Tk):
     def _log(self, msg):
         self.log.configure(state="normal")
         self.log.insert("end", msg + "\n")
+        # Jurnal cheksiz o'smasin: bir necha marta ishlov berilgandan
+        # keyin minglab qator to'planadi va Text widget har yangi qatorda
+        # sezilarli sekinlashadi. Faqat oxirgi qatorlarni saqlaymiz —
+        # foydalanuvchi baribir oxirini o'qiydi.
+        ortiqcha = int(self.log.index("end-1c").split(".")[0]) - 500
+        if ortiqcha > 0:
+            self.log.delete("1.0", f"{ortiqcha + 1}.0")
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -1783,8 +1806,16 @@ class App(tk.Tk):
         self.ui_queue.put(("done", done_ok, done_err, None))
 
     def _poll_queue(self):
+        # Navbatni oxirigacha bo'shatmaymiz. Ishlov paytida ishchi oqim
+        # yuzlab xabar yuboradi (har fayl uchun holat, foiz, jurnal
+        # qatorlari) — hammasini bitta tikda chizish asosiy oqimni uzoq
+        # band qiladi va ilova qisqa vaqtga qotib qolgandek ko'rinadi.
+        # Shuning uchun bir tikda cheklangan miqdorda ishlaymiz; xabar
+        # qolgan bo'lsa keyingi tikni darrov rejalashtiramiz, shunda
+        # ekran ham yangilanib turadi, ham tez to'ladi.
+        navbatda_bor = True
         try:
-            while True:
+            for _ in range(50):
                 kind, a, b, _c = self.ui_queue.get_nowait()
                 if kind == "status":
                     idx, status = a, b
@@ -1817,8 +1848,8 @@ class App(tk.Tk):
                     else:
                         messagebox.showinfo("Tugadi", f"Barcha {ok} ta fayl muvaffaqiyatli qayta ishlandi.{tip}")
         except queue.Empty:
-            pass
-        self.after(100, self._poll_queue)
+            navbatda_bor = False
+        self.after(10 if navbatda_bor else 100, self._poll_queue)
 
 
 def _enable_dpi_awareness():
