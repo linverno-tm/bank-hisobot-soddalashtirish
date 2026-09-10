@@ -47,6 +47,11 @@ import sv_ttk
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
 CORE_VERSION = "2.0.2"
 
+# Kodni qaysi shoxobchadan olganini launcher.py exec() dan oldin shu
+# nom bilan uzatadi. To'g'ridan-to'g'ri `python core.py` bilan ishga
+# tushirilganda hech kim uzatmaydi — o'shanda master deb hisoblanadi.
+SOURCE_BRANCH = globals().get("SOURCE_BRANCH", "master")
+
 # Ilova ochilganda faqat kompyuter nomi va versiyani yuboradi — bu
 # "kimda qaysi kod ishlab turibdi" degan savolga javob berish uchun.
 _PING_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/ping"
@@ -1380,7 +1385,13 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SoddaHisobot")
+        # Sinov nusxasini ishchi nusxa deb o'ylab qolmaslik uchun
+        # shoxobcha nomi sarlavhada turadi.
+        self.title(
+            "SoddaHisobot"
+            if SOURCE_BRANCH == "master"
+            else f"SoddaHisobot  —  SINOV REJIMI: {SOURCE_BRANCH}"
+        )
         self._apply_dpi_scaling()
         self.geometry("960x680")
         # Kichraytirilganda ham barcha tugmalar ko'rinib turadigan eng kichik
@@ -1408,7 +1419,10 @@ class App(tk.Tk):
         # (qayta-qayta qo'lda yuklanganda). Qaysi nusxa ochilganini bilish
         # uchun joylashuvni jurnalga yozamiz — aks holda "menda eski versiya
         # ko'rinyapti" degan holatni tekshirib bo'lmaydi.
-        self._log(f"Versiya v{CORE_VERSION}  |  Joylashuvi: {os.path.abspath(sys.executable)}")
+        self._log(
+            f"Versiya v{CORE_VERSION}  |  Shoxobcha: {SOURCE_BRANCH}"
+            f"  |  Joylashuvi: {os.path.abspath(sys.executable)}"
+        )
         self.after(100, self._poll_queue)
         threading.Thread(target=send_ping, daemon=True).start()
 
