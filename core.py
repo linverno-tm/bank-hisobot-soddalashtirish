@@ -20,6 +20,7 @@ Tuzilishi:
 import datetime
 import json
 import os
+import platform
 import queue
 import re
 import subprocess
@@ -62,8 +63,6 @@ def send_ping():
     """Ochilganini xabar qiladi. To'liq "ovozsiz": internet yo'q bo'lsa
     ilova ishlashiga ta'sir qilmaydi. Alohida oqimda chaqirilishi kerak."""
     try:
-        import platform
-
         payload = json.dumps({
             "host": platform.node() or "noma'lum",
             "version": CORE_VERSION,
@@ -1067,12 +1066,29 @@ class FileRow:
 # bo'lib qoladi. Bunday hisobotda yagona ishonchli belgi — to'lov maqsadi
 # matni, uni esa qoida bilan emas, ma'no bilan tushunish kerak.
 #
-# Tarmoq yo'q, kalit yo'q yoki javob buzuq bo'lsa — bo'sh natija qaytadi va
-# ilova avvalgidek (qo'lda kiritish bilan) ishlayveradi.
+# Tarmoq yo'q yoki javob buzuq bo'lsa — bo'sh natija qaytadi va ilova
+# avvalgidek (qo'lda kiritish bilan) ishlayveradi.
+#
+# So'rov to'g'ridan-to'g'ri Gemini'ga emas, o'zimizning Worker orqali
+# ketadi. Sabab: to'g'ridan-to'g'ri murojaat uchun API kalit har bir
+# foydalanuvchining kompyuterida turishi kerak edi, uni u yerdan ko'chirib
+# olish esa oson — hisob bitta bo'lgani uchun kalit tarqalsa so'rovlar
+# bizning nomimizdan ketaverardi. Endi kalit faqat serverda, ilovada
+# umuman yo'q. Worker'da kunlik chegara ham bor.
 AI_MODEL = "gemini-3-flash-preview"
-_AI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-_AI_KEY_FILE = "ai_key.txt"
+_AI_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/ai"
 _AI_RULES_FILE = "ai_qollanma.txt"
+
+# Worker qaytaradigan xato kodlari uchun foydalanuvchiga ko'rsatiladigan
+# matn. Avval har qanday nosozlik "AI mos taklif topa olmadi" bo'lib
+# ko'rinardi — ya'ni AI buzilganini bilib bo'lmasdi.
+_AI_ERRORS = {
+    "limit": "AI kunlik chegaraga yetdi — ertaga qayta ishlaydi.",
+    "config": "AI sozlamasida xato (server tomonida kalit yo'q).",
+    "upstream": "AI xizmati javob bermadi.",
+    "empty": "AI bo'sh javob qaytardi.",
+    "bad_request": "AI so'rovi qabul qilinmadi.",
+}
 
 # Foydalanuvchi ai_qollanma.txt ni birinchi marta ochganda nima yozishni
 # bilishi uchun namuna. Fayl yo'q bo'lsa shu mazmun bilan yaratiladi.
@@ -1088,12 +1104,50 @@ _AI_RULES_TEMPLATE = """\
 """
 
 
+SETTINGS_FILE = "sozlamalar.json"
+AI_ENABLED_KEY = "ai_yoqilgan"
+
+
+def _settings_path():
+    return os.path.join(_data_dir(), SETTINGS_FILE)
+
+
+def get_setting(nom, standart=None):
+    try:
+        with open(_settings_path(), encoding="utf-8") as f:
+            return json.load(f).get(nom, standart)
+    except (OSError, ValueError):
+        return standart
+
+
+def set_setting(nom, qiymat):
+    try:
+        with open(_settings_path(), encoding="utf-8") as f:
+            sozlamalar = json.load(f)
+        if not isinstance(sozlamalar, dict):
+            sozlamalar = {}
+    except (OSError, ValueError):
+        sozlamalar = {}
+    sozlamalar[nom] = qiymat
+    try:
+        with open(_settings_path(), "w", encoding="utf-8") as f:
+            json.dump(sozlamalar, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def ai_enabled():
+    """AI takliflari yoqilganmi. Standart holatda yoqilgan.
+
+    O'chirgich kerak, chunki kalit endi serverda va AI hammada o'z-o'zidan
+    ishlaydi — noto'g'ri taklif bera boshlasa, foydalanuvchida uni to'xtatish
+    yo'li bo'lishi shart."""
+    return bool(get_setting(AI_ENABLED_KEY, True))
+
+
 def ai_rules_paths():
-    yollar = [os.path.join(_base_dir(), _AI_RULES_FILE)]
-    lokal = os.environ.get("LOCALAPPDATA")
-    if lokal:
-        yollar.append(os.path.join(lokal, "SoddaHisobot", _AI_RULES_FILE))
-    return yollar
+    return [os.path.join(_base_dir(), _AI_RULES_FILE),
+            os.path.join(_data_dir(), _AI_RULES_FILE)]
 
 
 def ai_extra_rules():
@@ -1160,33 +1214,6 @@ AI_GROUP_HINTS = {
 }
 
 
-def ai_key_paths():
-    """Kalit qidiriladigan fayllar, tartib bilan.
-
-    Ikkinchi joy — sinov sozlamalari papkasi: branch.txt ham o'sha yerda
-    turadi, ya'ni sinov uchun kerak bo'lgan hamma narsa bitta joyda."""
-    yollar = [os.path.join(_base_dir(), _AI_KEY_FILE)]
-    lokal = os.environ.get("LOCALAPPDATA")
-    if lokal:
-        yollar.append(os.path.join(lokal, "SoddaHisobot", _AI_KEY_FILE))
-    return yollar
-
-
-def ai_key():
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if key:
-        return key
-    for yol in ai_key_paths():
-        try:
-            with open(yol, encoding="utf-8") as f:
-                key = f.read().strip()
-        except OSError:
-            continue
-        if key:
-            return key
-    return ""
-
-
 def _ai_prompt(items, groups):
     hints = {g: AI_GROUP_HINTS[g] for g in groups if g in AI_GROUP_HINTS}
     rows = [
@@ -1225,26 +1252,48 @@ def ai_suggest(items, groups, timeout=60):
     items  — find_unresolved() qaytargan yozuvlar ro'yxati
     groups — ruxsat etilgan guruh nomlari
 
-    Qaytaradi: {indeks: {"guruh", "ishonch", "sabab"}}. Xato yuz bersa —
-    bo'sh lug'at."""
-    key = ai_key()
-    if not key or not items or not groups:
-        return {}
+    Qaytaradi: (takliflar, xato), bunda takliflar —
+    {indeks: {"guruh", "ishonch", "sabab"}}, xato esa None yoki
+    foydalanuvchiga ko'rsatiladigan qisqa sabab.
+
+    Xato matni alohida qaytariladi, chunki avval har qanday nosozlik —
+    tarmoq uzilishi, chegara, server xatosi — bir xil "taklif topilmadi"
+    bo'lib ko'rinardi va AI buzilganini bilib bo'lmasdi."""
+    if not items or not groups:
+        return {}, None
     try:
         body = json.dumps({
-            "contents": [{"parts": [{"text": _ai_prompt(items, groups)}]}],
-            "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
+            "host": platform.node() or "noma'lum",
+            "model": AI_MODEL,
+            "prompt": _ai_prompt(items, groups),
         }).encode("utf-8")
         req = urllib.request.Request(
-            _AI_URL.format(model=AI_MODEL, key=key),
+            _AI_URL,
             data=body,
-            headers={"Content-Type": "application/json"},
+            # User-Agent shart: Cloudflare urllib'ning standart nomini
+            # bloklaydi va 403 (xato 1010) qaytaradi.
+            headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        answers = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+            javob = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Worker xato sababini javob tanasida beradi (chegara, sozlama,
+        # yuqori oqim) — o'shani o'qib, tushunarli xabarga aylantiramiz.
+        try:
+            kod = json.loads(e.read().decode("utf-8")).get("error", "")
+        except Exception:
+            kod = ""
+        return {}, _AI_ERRORS.get(kod, f"AI xizmatida xato ({e.code}).")
     except Exception:
-        return {}
+        return {}, "AI xizmatiga ulanib bo'lmadi — internetni tekshiring."
+
+    if not javob.get("ok"):
+        return {}, _AI_ERRORS.get(javob.get("error", ""), "AI javob bermadi.")
+
+    try:
+        answers = json.loads(javob["text"])
+    except (KeyError, ValueError):
+        return {}, "AI javobini o'qib bo'lmadi."
 
     allowed = set(groups)
     out = {}
@@ -1262,7 +1311,7 @@ def ai_suggest(items, groups, timeout=60):
             "ishonch": str(a.get("ishonch") or "").strip(),
             "sabab": str(a.get("sabab") or "").strip(),
         }
-    return out
+    return out, None
 
 
 def ai_known_groups():
@@ -1399,6 +1448,14 @@ class UnresolvedDialog(tk.Toplevel):
         ttk.Button(footer, text="Saqlash va davom etish", command=self._on_confirm).pack(side="right")
         ttk.Button(footer, text="Bekor qilish", command=self._on_cancel).pack(side="right", padx=(0, 8))
 
+        # O'chirgich shu yerda turadi — AI aynan shu oynada ishlaydi,
+        # noto'g'ri taklif ko'rgan odam uni darhol shu yerdan to'xtata
+        # olishi kerak, sozlamalar ichidan qidirmasdan.
+        self.ai_var = tk.BooleanVar(value=ai_enabled())
+        ttk.Checkbutton(
+            footer, text="AI takliflari", variable=self.ai_var, command=self._toggle_ai
+        ).pack(side="left", padx=(0, 14))
+
         self._ai_status = ttk.Label(footer, text="", foreground="#666666")
         self._ai_status.pack(side="left")
         self._start_ai()
@@ -1424,17 +1481,21 @@ class UnresolvedDialog(tk.Toplevel):
             lbl.configure(wraplength=wrap)
 
     # -------------------------------------------------- AI takliflari
+    def _toggle_ai(self):
+        yoqilgan = bool(self.ai_var.get())
+        set_setting(AI_ENABLED_KEY, yoqilgan)
+        if yoqilgan:
+            self._start_ai()
+        else:
+            self._ai_status.configure(text="AI takliflari o'chirilgan.")
+
     def _start_ai(self):
         """Fon oqimida guruh takliflarini so'raydi. Bu faqat yordam —
         javob kelmasa ham oyna avvalgidek ishlayveradi."""
         if not self._row_order:
             return
-        if not ai_key():
-            # Jim turmaymiz: aks holda "AI ishlayaptimi yo'qmi" degan
-            # savolga javob topib bo'lmaydi.
-            self._ai_status.configure(
-                text=f"AI o'chiq — {_AI_KEY_FILE} topilmadi ({ai_key_paths()[0]})"
-            )
+        if not self.ai_var.get():
+            self._ai_status.configure(text="AI takliflari o'chirilgan.")
             return
 
         # Fayl birinchi ochilishda namuna bilan yaratiladi, aks holda
@@ -1461,11 +1522,14 @@ class UnresolvedDialog(tk.Toplevel):
         if not self.winfo_exists():
             return
         try:
-            natija = self._ai_queue.get_nowait()
+            takliflar, xato = self._ai_queue.get_nowait()
         except queue.Empty:
             self.after(150, self._poll_ai)
             return
-        self._apply_ai(natija)
+        if xato:
+            self._ai_status.configure(text=xato)
+            return
+        self._apply_ai(takliflar)
 
     def _apply_ai(self, takliflar):
         """Takliflarni maydonlarga yozadi. Foydalanuvchi allaqachon biror
