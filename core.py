@@ -1,0 +1,1879 @@
+# -*- coding: utf-8 -*-
+"""
+SoddaHisobot — bank hisobotlarini soddalashtiruvchi ilovaning BUTUN
+mantiqi va interfeysi.
+
+Bu fayl GitHub'da turadi va launcher (.exe) uni har ishga tushganda
+yuklab olib bajaradi. Ya'ni tuzatish yoki yangi funksiya chiqarish uchun
+shu faylni GitHub'ga push qilish kifoya — foydalanuvchiga hech narsa
+qayta o'rnatish kerak emas, .exe o'zgarmaydi.
+
+Shuning uchun ilova ichida hech qanday "avtomatik yangilanish" kodi
+yo'q: yangilanish launcher darajasida, faylni yuklab olish orqali
+sodir bo'ladi.
+
+Tuzilishi:
+  1-QISM  — tasniflash: xom hisobotni o'qish, kontragentni guruhga ajratish
+  2-QISM  — hisobot yasash: soddalashtirilgan .xlsx chiqarish
+  3-QISM  — interfeys (Tkinter GUI) va main()
+"""
+import datetime
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import traceback
+import urllib.request
+import winreg
+from collections import defaultdict
+from copy import copy
+from decimal import Decimal
+
+import openpyxl
+from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Border, Font, Side
+from openpyxl.utils import get_column_letter
+
+import tkinter as tk
+from tkinter import font as tkfont
+from tkinter import ttk, filedialog, messagebox
+
+import sv_ttk
+
+# Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
+# foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
+CORE_VERSION = "2.0.0"
+
+# Ilova ochilganda faqat kompyuter nomi va versiyani yuboradi — bu
+# "kimda qaysi kod ishlab turibdi" degan savolga javob berish uchun.
+_PING_URL = "https://soddahisobot-telemetry.tasks-bot.workers.dev/ping"
+_USER_AGENT = "SoddaHisobot-Core"
+
+
+def send_ping():
+    """Ochilganini xabar qiladi. To'liq "ovozsiz": internet yo'q bo'lsa
+    ilova ishlashiga ta'sir qilmaydi. Alohida oqimda chaqirilishi kerak."""
+    try:
+        import platform
+
+        payload = json.dumps({
+            "host": platform.node() or "noma'lum",
+            "version": CORE_VERSION,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _PING_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5).close()
+    except Exception:
+        pass
+
+
+# ======================================================================
+# 1-QISM — TASNIFLASH
+# ======================================================================
+
+TOTAL_ROW_MARKERS = ("итоговый оборот", "итого", "jami", "всего")
+
+
+def is_total_row(first_cell):
+    if first_cell is None:
+        return False
+    return str(first_cell).strip().lower().startswith(TOTAL_ROW_MARKERS)
+
+
+# Sana ustuni "faqat sana"dan iboratmi? Hisobot oxirida bank qo'shimcha
+# qatorlar qo'shadi: "Обороты по дебету: кол-во 8", "Исходящий остаток на
+# 31.08.2026", bank nomi/manzili va h.k. Ular operatsiya emas, lekin
+# ustunlarida summa turgani uchun avval oddiy qator deb o'qilib, "?"
+# nomsiz kontragent sifatida so'ralib qolardi.
+#
+# Kalit so'z ro'yxatiga tayanmaymiz (har bankda har xil yoziladi) —
+# o'rniga tuzilmaga tayanamiz: HAQIQIY operatsiya qatorida sana ustuni
+# TOZA sana bo'ladi. "Исходящий остаток на 31.08.2026" ichida sana bor,
+# lekin butun katak sana emas — shuning uchun to'liq moslik talab qilinadi.
+_DATE_ONLY_RX = re.compile(
+    r"^\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}"      # 03.08.2026 / 3-8-26
+    r"(?:[\s,]+\d{1,2}:\d{2}(?::\d{2})?)?"       # ixtiyoriy vaqt
+    r"(?:\.\d+)?\s*$"                             # ixtiyoriy mikrosoniya
+)
+
+
+def looks_like_date(value):
+    """Katak butunlay sanadan iboratmi (matn ichidagi sana emas)."""
+    if value is None or value == "":
+        return False
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return True
+    return bool(_DATE_ONLY_RX.match(str(value)))
+
+
+# Bitta hisob raqam (masalan G'aznachilik / Молия вазирлиги hisobvarag'i)
+# orqali butunlay boshqa-boshqa maqsaddagi to'lovlar o'tadi: foyda solig'i,
+# QQS, elektr uchun to'lov... Shuning uchun bu qoidalar hisob raqam bo'yicha
+# o'rgatilgan guruhdan ham USTUN turadi — to'lov maqsadi (Назначение
+# платежа) matni bu yerda hal qiluvchi hisoblanadi.
+# G'aznachilik / Moliya vazirligi hisobvarag'i orqali butunlay har xil
+# maqsaddagi to'lovlar o'tadi: foyda solig'i, QQS, elektr, ijtimoiy soliq...
+# Shuning uchun bunday kontragentni HECH QACHON hisob raqam yoki nom
+# bo'yicha "o'rganib" qo'ymaymiz — aks holda bir marta "QQS" deb
+# belgilangach, keyingi barcha to'lovlar ham QQS bo'lib ketardi.
+#
+# Bunday qatorlar uchun tartib: avval to'lov maqsadi qoidalari (soliq
+# turi, elektr...) ishlaydi; ular topa olmasa — foydalanuvchidan
+# SO'RALADI, va javob faqat shu faylga tegishli bo'ladi.
+ALWAYS_ASK_NAME_RX = re.compile(
+    r"молия\s*вазирлиг|газначилиг|ягона\s*газна|казначейств",
+    re.I,
+)
+
+# Foydalanuvchi shu ish davomida bergan javoblar: (hisob, maqsad izi) -> guruh.
+# Diskka YOZILMAYDI — "doim so'ralsin" degani shu.
+SESSION_OVERRIDES = {}
+
+
+def purpose_signature(text):
+    """To'lov maqsadidan barqaror "iz" yasaydi: raqamlar, hujjat nomerlari
+    va ajratuvchilar olib tashlanadi, faqat ma'noli so'zlar qoladi.
+    Shunda "...~32 Фойда солиги учун олдиндан тулов" va boshqa hujjat
+    raqamli xuddi shu to'lov bitta savol sifatida ko'rinadi."""
+    t = re.sub(r"[\d~№/\\.,:;()-]+", " ", str(text or ""))
+    return " ".join(t.split()).lower()[:70]
+
+
+def is_always_ask(name, account=None):
+    """Kontragent ko'p maqsadli (har safar so'ralishi kerak) mi?"""
+    return bool(ALWAYS_ASK_NAME_RX.search(str(name or "")))
+
+
+def set_session_override(account, purpose, category):
+    """Foydalanuvchi javobini shu ish uchun eslab qoladi (diskka emas)."""
+    SESSION_OVERRIDES[(str(account or ""), purpose_signature(purpose))] = category
+
+
+def clear_session_overrides():
+    SESSION_OVERRIDES.clear()
+
+
+PURPOSE_FIRST_RULES = [
+    (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда"),
+    # DIQQAT: bu yerda faqat aniq "Кушилган киймат солиги" iborasi tekshiriladi.
+    # Umumiy "НДС" so'zi ATAYLAB kiritilmagan — oddiy tovar to'lovlarida ham
+    # "Сумма ... В т.ч. НДС (12%) ..." deb yoziladi, va u paytda bu soliq
+    # to'lovi emas, balki narxning tarkibiy qismi. Umumiy "НДС" qoidasi
+    # quyida, past darajali TEXT_RULES ichida qoldirilgan.
+    (re.compile(r"[кқ]ушилган\s*[кқ]иймат\s*соли[гғ]и", re.I), "солик КҚС"),
+    (re.compile(r"ижтимоий\s*соли[кқ]", re.I), "солик ижтимоий"),
+    (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад"),
+    (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия"),
+    (re.compile(r"сув\s*таъминоти|ичимлик\s*сув", re.I), "коммунал"),
+    (re.compile(r"табиий\s*газ|газ\s*учун", re.I), "коммунал"),
+    # Elektr alohida guruh — kommunalga qo'shilmaydi.
+    (re.compile(r"фойдаланилган\s*электр|электр\s*учун|электр\s*энергия", re.I), "электр"),
+    (re.compile(r"ижара\s*ту[лл]ови", re.I), "ижара"),
+]
+
+
+# Ordered keyword rules: (regex, category, confidence)
+# confidence 'high' = auto-apply, 'guess' = apply but flag for review
+TEXT_RULES = [
+    (re.compile(r"начисленные\s*%%", re.I), "банк хизмати", "high"),  # naименование check done separately too
+    (re.compile(r"smartvista|humo\s*\(|возмещение клиенту по покупкам тсп", re.I), "Терминал", "high"),
+    (re.compile(r"tbc\s*fin\s*service|tbc\s*bnpl", re.I), "ф пайми", "high"),
+    (re.compile(r"variant\s*retail\s*finance", re.I), "ф вариант", "high"),
+    (re.compile(r"куриклаш", re.I), "куриклаш", "high"),
+    (re.compile(r"зарплата|иш\s*ха[кқ]и", re.I), "иш хаки ПК", "high"),
+    (re.compile(r"ижтимоий\s*соли[кқ]", re.I), "солик ижтимоий", "high"),
+    (re.compile(r"даромадидан\s*олинадиган\s*соли[кқ]|даромад\s*соли[гғ]и", re.I), "солик даромад", "high"),
+    (re.compile(r"пенсия\s*бадалига", re.I), "солик пенсия", "high"),
+    (re.compile(r"сорж", re.I), "СОРЖ", "high"),
+    # Lower confidence guesses (new patterns not seen in the DDD reference file yet).
+    # Finance-partner style wording ("Публичная оферта" + "ген соглашение"-like BNPL
+    # contracts) is checked BEFORE the generic "НДС" substring rule, since a BNPL
+    # settlement text often mentions VAT only incidentally as a line item.
+    (re.compile(r"оплата\s*100\s*%.*по\s*договору\s*публичная\s*оферта", re.I), "ф (аникланмаган)", "guess"),
+    (re.compile(r"ижара\s*тулови|ижара\s*ту[лл]ови", re.I), "ижара", "guess"),
+    (re.compile(r"фойдаланилган\s*электр|электр\s*учун", re.I), "электр", "guess"),
+    (re.compile(r"консалтинг|konsalting", re.I), "хизмат", "guess"),
+    (re.compile(r"фойда\s*соли[гғ]и", re.I), "солик фойда", "guess"),
+    (re.compile(r"кушилган\s*[кқ]иймат\s*соли[гғ]и|\bндс\b", re.I), "солик КҚС", "guess"),
+]
+
+GOODS_PURCHASE_HINT = re.compile(
+    r"маиший техника|maishiy texnika|телефон|планшет|товар|жихоз|асбоб|"
+    r"курилиш махсулот|дастурий таъминот|болалар уйинчок|мобил алока воситалари|"
+    r"бытовой техник|бытавой техник|посуд",
+    re.I,
+)
+
+# Vendor (INN) -> category, confirmed from a real "ДДД Август" file the boss
+# already produced by hand. Same suppliers keep recurring across different
+# companies' statements (same Andijon retail/appliance trade network), so
+# this dictionary is the highest-confidence signal available and should grow
+# over time (persist_dictionary.json).
+_BUILTIN_VENDOR_INN = {
+    "303389344": "МЕБ",       # Andijon Ravnaqi МЧЖ
+    "207180749": "МЕБ",       # Goods And Services Impex
+    "306776074": "ф пайми",   # TBC FIN SERVICE
+    "312422124": "ф пайми",   # TBC BNPL
+    "307490921": "ф вариант", # VARIANT RETAIL FINANCE
+    "200292692": "солик пенсия",  # tuman ДСИ
+    "200237592": "куриклаш",  # ИИБ КОШИДАГИ КУРИКЛАШ БУЛИМИ
+    "310692639": "МЕБ",       # BIG ELECTRONICA МЧЖ
+    "311019672": "МЕБ",       # ELEKTROMAX МЧЖ
+    "309018562": "МЕБ",       # TOSHIBA AND MCHJ
+    "310890749": "МЕБ",       # AMIR GROUP DU
+}
+KNOWN_VENDOR_INN = dict(_BUILTIN_VENDOR_INN)
+
+
+
+def _base_dir():
+    # When bundled by PyInstaller, __file__ points into a temp extraction
+    # folder, so use the actual .exe location instead to find/persist the
+    # dictionary next to the app (editable, grows over time).
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_DICT_PATH = os.path.join(_base_dir(), "persist_dictionary.json")
+
+# Name-keyed learned mappings, for counterparties with no ИНН. Stored in the
+# same persist_dictionary.json file, namespaced with a "NAME::" key prefix so
+# it never collides with the (purely numeric) ИНН keys.
+KNOWN_VENDOR_NAME = {}
+_NAME_KEY_PREFIX = "NAME::"
+# Foydalanuvchi o'zi qo'shgan "to'lov maqsadi matni -> guruh" qoidalari.
+# Bitta hisob raqam orqali turli maqsaddagi to'lovlar o'tganda, ilovada
+# tayyor qoida bo'lmasa, foydalanuvchi shu yerga o'zi qoida qo'sha oladi.
+KNOWN_PURPOSE_TEXT = {}
+_TEXT_KEY_PREFIX = "TEXT::"
+
+
+# Ilova avval ba'zi guruh nomlarini lotin harflari bilan yozardi
+# ("солик QQS", "Avto to'lov"). Hisobot butunlay kirillcha bo'lishi kerak,
+# shuning uchun nomlar o'zgartirildi. Foydalanuvchining eski yozuvlari
+# yo'qolib qolmasligi uchun ular ochilishda avtomatik ko'chiriladi.
+_LEGACY_GROUP_RENAMES = {
+    "солик QQS": "солик КҚС",
+    "ф (aniqlanmagan)": "ф (аникланмаган)",
+    "ARALASH": "АРАЛАШ",
+    "Click": "Клик",
+    "Avto to'lov": "Авто тулов",
+}
+
+
+def _migrate_legacy_groups():
+    """Diskdagi lug'atda eski (lotincha) guruh nomlari qolgan bo'lsa,
+    ularni yangi kirillcha nomlarga almashtiradi."""
+    try:
+        with open(_DICT_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return
+    yangi = {k: _LEGACY_GROUP_RENAMES.get(v, v) for k, v in raw.items()}
+    if yangi != raw:
+        try:
+            with open(_DICT_PATH, "w", encoding="utf-8") as f:
+                json.dump(yangi, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError:
+            pass
+
+
+def _load_persist_dict():
+    try:
+        with open(_DICT_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raw = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and k.startswith(_TEXT_KEY_PREFIX):
+            KNOWN_PURPOSE_TEXT[k[len(_TEXT_KEY_PREFIX):]] = v
+        elif isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
+            KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
+        else:
+            KNOWN_VENDOR_INN[k] = v
+
+
+_migrate_legacy_groups()
+_load_persist_dict()
+
+
+def save_learned_category(identifier, name, category):
+    """Persist a user-supplied category for a previously-unresolved ("?")
+    counterparty, so future reports auto-classify it. Keyed by Xisob raqam
+    (Счет) when available (most reliable, and stable per counterparty);
+    falls back to the exact counterparty name otherwise. `identifier` may
+    also be an ИНН, for backward compatibility with entries learned by
+    older versions of this app. Updates both the on-disk dictionary and the
+    in-memory maps so the rest of the current run benefits immediately."""
+    identifier = str(identifier).strip() if identifier else ""
+    name = (name or "").strip()
+    if not identifier and not name:
+        return
+    try:
+        with open(_DICT_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raw = {}
+    if identifier.startswith(_TEXT_KEY_PREFIX):
+        phrase = identifier[len(_TEXT_KEY_PREFIX):]
+        raw[identifier] = category
+        KNOWN_PURPOSE_TEXT[phrase] = category
+    elif identifier:
+        raw[identifier] = category
+        KNOWN_VENDOR_INN[identifier] = category
+    else:
+        raw[f"{_NAME_KEY_PREFIX}{name}"] = category
+        KNOWN_VENDOR_NAME[name] = category
+    with open(_DICT_PATH, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def load_all_mappings():
+    """Return the raw on-disk mapping ({ИНН or 'NAME::<nomi>': kategoriya}),
+    for a UI to list/edit directly. Built-in (hardcoded) vendor mappings are
+    NOT included here — only what the user has explicitly taught the app."""
+    try:
+        with open(_DICT_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_all_mappings(mapping):
+    """Overwrite persist_dictionary.json wholesale with `mapping` (as
+    returned/edited from load_all_mappings) and refresh the in-memory maps
+    so a Guruhlar-manager UI's changes apply immediately, without discarding
+    the built-in defaults."""
+    with open(_DICT_PATH, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, ensure_ascii=False, indent=2, sort_keys=True)
+    KNOWN_VENDOR_INN.clear()
+    KNOWN_VENDOR_INN.update(_BUILTIN_VENDOR_INN)
+    KNOWN_VENDOR_NAME.clear()
+    KNOWN_PURPOSE_TEXT.clear()
+    for k, v in mapping.items():
+        if isinstance(k, str) and k.startswith(_TEXT_KEY_PREFIX):
+            KNOWN_PURPOSE_TEXT[k[len(_TEXT_KEY_PREFIX):]] = v
+        elif isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
+            KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
+        else:
+            KNOWN_VENDOR_INN[k] = v
+
+
+def unique_counterparties(rows):
+    """Return every unique counterparty found in a raw statement (keyed by
+    Xisob raqam / Счет, or by name when the account number is missing),
+    regardless of whether it was already classified. Used by the
+    Guruhlar-manager UI to let the user pick a real counterparty out of an
+    actual file (like browsing the statement itself) instead of typing an
+    identifier by hand."""
+    parties = {}
+    for r in rows:
+        account = str(r["account"]).strip() if r["account"] else ""
+        inn = str(r["inn"]).strip() if r["inn"] else ""
+        name = str(r["name"] or "").strip()
+        if not account and not name:
+            continue
+        key = account if account else f"{_NAME_KEY_PREFIX}{name}"
+        if key not in parties:
+            parties[key] = {
+                "account": account,
+                "inn": inn,
+                "name": name,
+                "mfo": str(r.get("mfo") or "").strip(),
+                "sample": str(r["purpose"] or "")[:200],
+            }
+    return parties
+
+
+def find_unresolved(rows):
+    """Scan rows and return unique unclassified ("?") counterparties, keyed
+    by Xisob raqam / Счет (or by name when the account number is missing),
+    for the caller to ask the user about before generating the report."""
+    unresolved = {}
+    for r in rows:
+        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        if conf != "review":
+            continue
+        account = str(r["account"]).strip() if r["account"] else ""
+        name = str(r["name"] or "").strip()
+        koʻp_maqsadli = is_always_ask(name, account)
+        if koʻp_maqsadli:
+            # Har bir maqsad alohida savol bo'lsin: bitta hisob raqamda
+            # soliq ham, elektr ham bo'lishi mumkin.
+            key = f"{account}|{purpose_signature(r['purpose'])}"
+        else:
+            key = account if account else f"{_NAME_KEY_PREFIX}{name}"
+        entry = unresolved.setdefault(key, {
+            "account": account,
+            "inn": str(r["inn"]).strip() if r["inn"] else "",
+            "name": name,
+            "mfo": str(r.get("mfo") or "").strip(),
+            "sample": str(r["purpose"] or "")[:200],
+            "always_ask": koʻp_maqsadli,
+            "purpose": str(r["purpose"] or ""),
+            "count": 0,
+        })
+        entry["count"] += 1
+    return unresolved
+
+
+def classify_row(op, name, text, inn, account=None):
+    """Classify a SINGLE row by its own text/name/Xisob raqam. Never looks
+    at other rows sharing the same raw account number.
+
+    Matching is done primarily by the counterparty's Xisob raqam (Счет).
+    ИНН is kept as a secondary fallback so categories learned by older
+    versions of this app (persist_dictionary.json entries keyed by ИНН)
+    keep working after this update.
+
+    ISTISNO: PURPOSE_FIRST_RULES — bitta hisob raqam orqali turli xil
+    to'lovlar o'tadigan holatlar (G'aznachilik hisobvarag'i: foyda solig'i,
+    QQS, elektr uchun to'lov) uchun to'lov maqsadi matni hisob raqamdan
+    ustun turadi, aks holda hammasi bitta guruhga tushib qolardi."""
+    name = name or ""
+    text = text or ""
+
+    if re.search(r"начисленные\s*%%", name, re.I):
+        return "банк хизмати", "high"
+
+    account_str = str(account).strip() if account else ""
+
+    # Foydalanuvchi shu ish davomida aynan shu to'lov uchun javob bergan
+    # bo'lsa — o'shani ishlatamiz.
+    sess = SESSION_OVERRIDES.get((account_str, purpose_signature(text)))
+    if sess:
+        return sess, "high"
+
+    for rx, cat in PURPOSE_FIRST_RULES:
+        if rx.search(text):
+            return cat, "high"
+
+    # Foydalanuvchi o'zi qo'shgan matn qoidalari — hisob raqamdan ustun
+    # turadi, chunki ular aynan shunday "bitta hisob raqam, ko'p maqsad"
+    # holatlarini qo'lda ajratish uchun kiritilgan.
+    text_low = text.lower()
+    for phrase, cat in KNOWN_PURPOSE_TEXT.items():
+        if phrase.lower() in text_low:
+            return cat, "high"
+
+    # Ko'p maqsadli kontragent (G'aznachilik) — hisob/nom bo'yicha
+    # o'rganilgan guruh QO'LLANMAYDI, chunki u har safar boshqa maqsadda
+    # bo'lishi mumkin. Yuqoridagi maqsad qoidalari ishlamagan bo'lsa,
+    # pastda "?" qaytadi va ilova foydalanuvchidan so'raydi.
+    if is_always_ask(name, account):
+        return "?", "review"
+
+    account = account_str
+    inn = str(inn).strip() if inn else ""
+    if account and account in KNOWN_VENDOR_INN:
+        return KNOWN_VENDOR_INN[account], "high"
+    if inn and inn in KNOWN_VENDOR_INN:
+        return KNOWN_VENDOR_INN[inn], "high"
+
+    name_key = name.strip()
+    if name_key in KNOWN_VENDOR_NAME:
+        return KNOWN_VENDOR_NAME[name_key], "high"
+
+    for rx, cat, conf in TEXT_RULES:
+        if rx.search(text) or rx.search(name):
+            return cat, conf
+
+    if op == 1 and GOODS_PURCHASE_HINT.search(text):
+        return "МЕБ", "guess"
+
+    return "?", "review"
+
+
+def propose_category_for_group(op_values, names, texts, inns, accounts=None):
+    """Given all rows sharing one raw account number, classify each row on
+    its own merits, then only collapse to a single group-level category if
+    every row agrees. A raw account is NOT trusted as a category by itself
+    (e.g. a generic treasury account can carry profit tax, VAT AND utility
+    payments; conversely two different accounts that both happen to mention
+    HUMO/SmartVista text should NOT be assumed identical without agreeing)."""
+    if accounts is None:
+        accounts = [None] * len(op_values)
+    per_row = [classify_row(op, n, t, i, a) for op, n, t, i, a in zip(op_values, names, texts, inns, accounts)]
+    cats = {c for c, _ in per_row}
+    if len(cats) == 1:
+        cat, conf = per_row[0]
+        return cat, conf, per_row
+    return "АРАЛАШ", "mixed", per_row
+
+
+# Ustunlarni JOYLASHUVI bo'yicha emas, SARLAVHA NOMI bo'yicha aniqlaymiz —
+# chunki banklar bir necha xil ko'rinishda hisobot beradi:
+#   A) "CBreport63": Дата | Счет | ИНН | Наименование | № док-та | Оп | МФО | ...
+#   B) "Сведения о работе счета": ИНН va Наименование ustunlari YO'Q, hisob
+#      raqam katagida nom yangi qatordan keyin turadi, summalar esa matn
+#      ko'rinishida ("1 170 682,76")
+#   C) "Sheet1": Дата проводки | Номер документа | МФО корресп. | Счет
+#      корреспондента | Наименование корресп. | ИНН | Детали | Дебет | Кредит
+# Shu tarzda kelajakda yana bir variant chiqsa ham kod ishlayveradi.
+_COLUMN_ALIASES = {
+    "date": ("дата проводки", "дата"),
+    "account": ("счет корреспондента", "счет корресп.", "счет"),
+    "inn": ("инн",),
+    "name": ("наименование корресп.", "наименование корресп", "наименование"),
+    "doc_no": ("№ док-та", "номер документа", "№ док"),
+    "op": ("оп",),
+    "mfo": ("мфо корресп.", "мфо корресп", "мфо"),
+    "debit": ("оборот дебет", "дебет"),
+    "credit": ("оборот кредит", "кредит"),
+    "purpose": ("назначение платежа", "детали"),
+}
+
+
+def _norm_header(value):
+    """Sarlavha matnini solishtirishga tayyorlaydi: kichik harf, yangi
+    qator va ortiqcha bo'shliqlar bitta bo'shliqqa aylanadi."""
+    return " ".join(str(value or "").split()).strip().lower()
+
+
+def _detect_header(ws, max_scan=30):
+    """Sarlavha qatorini va ustunlar xaritasini topadi. Kamida "дата",
+    "счет" va "назначение платежа"/"детали" bo'lishi shart, aks holda bu
+    qator sarlavha emas."""
+    for row in ws.iter_rows(min_row=1, max_row=min(max_scan, ws.max_row)):
+        found = {}
+        for cell in row:
+            h = _norm_header(cell.value)
+            if not h:
+                continue
+            for field, aliases in _COLUMN_ALIASES.items():
+                if field in found:
+                    continue
+                if h in aliases:
+                    found[field] = cell.column - 1  # 0-asosli indeks
+                    break
+        if "date" in found and "account" in found and "purpose" in found:
+            return row[0].row, found
+    return None, {}
+
+
+def _parse_amount(value):
+    """Summani songa aylantiradi. Ba'zi hisobotlarda summa matn bo'lib
+    keladi: "1 170 682,76" yoki "0,00" — bo'sh joylar ajratuvchi, vergul
+    esa kasr belgisi."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return value or None
+    t = str(value).replace("\xa0", " ").replace(" ", "").replace(",", ".")
+    if not t or t in ("-", "."):
+        return None
+    try:
+        num = float(t)
+    except ValueError:
+        return None
+    return num or None
+
+
+def _parse_op(value):
+    """Operatsiya turi ba'zi hisobotlarda matn ("4"), ba'zilarida son
+    bo'lib keladi, C formatida esa bu ustun umuman yo'q."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _split_account_cell(value):
+    """B formatida hisob raqam katagi "23508000007102718500\\nYANGI..."
+    ko'rinishida keladi — raqam birinchi qatorda, kontragent nomi esa
+    keyingi qatorlarda. Ikkalasini ajratib qaytaradi."""
+    parts = [p.strip() for p in str(value or "").splitlines() if p.strip()]
+    if not parts:
+        return "", ""
+    return parts[0], " ".join(parts[1:])
+
+
+def load_raw_rows(path, sheet_name=None):
+    """Xom hisobotni o'qiydi. Qaytaradi: (wb, ws, layout, rows), bunda
+    `layout` — {"header_row": int, "cols": {maydon: ustun indeksi}}.
+    Chaqiruvchi hisobotga yozishda `layout["cols"]["account"]` dan
+    foydalanishi kerak, chunki hisob raqam ustuni har formatda har xil
+    joyda turadi."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
+
+    header_row, cols = _detect_header(ws)
+    if header_row is None:
+        raise ValueError(
+            "Bu faylda tanish sarlavha qatori topilmadi "
+            "(kamida \"Дата\", \"Счет\" va \"Назначение платежа\" ustunlari kerak)."
+        )
+
+    def get(vals, field):
+        idx = cols.get(field)
+        if idx is None or idx >= len(vals):
+            return None
+        return vals[idx]
+
+    rows = []
+    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row):
+        vals = [c.value for c in row]
+        if not vals or all(v is None for v in vals):
+            continue
+        date_val = get(vals, "date")
+        if is_total_row(date_val):
+            continue
+        # Sana ustuni toza sana bo'lmasa — bu jadval oxiridagi yakuniy
+        # ma'lumot qatori (jami aylanma, chiqish qoldig'i, bank manzili).
+        if not looks_like_date(date_val):
+            continue
+
+        account_raw = get(vals, "account")
+        account, embedded_name = _split_account_cell(account_raw)
+        name = get(vals, "name")
+        if not name and embedded_name:
+            # B formatida alohida "Наименование" ustuni yo'q — nom hisob
+            # raqam katagining ichida keladi.
+            name = embedded_name
+
+        rows.append({
+            "excel_row": row[0].row,
+            "date": get(vals, "date"),
+            "account": account,
+            "inn": get(vals, "inn"),
+            "name": name,
+            "doc_no": get(vals, "doc_no"),
+            "op": _parse_op(get(vals, "op")),
+            "mfo": get(vals, "mfo"),
+            "debit": _parse_amount(get(vals, "debit")),
+            "credit": _parse_amount(get(vals, "credit")),
+            "purpose": get(vals, "purpose") or "",
+        })
+    return wb, ws, {"header_row": header_row, "cols": cols}, rows
+
+
+def build_account_proposals(rows):
+    groups = defaultdict(lambda: {"op": [], "names": [], "texts": [], "inns": [], "rows": [],
+                                   "debit": Decimal(0), "credit": Decimal(0)})
+    for r in rows:
+        g = groups[r["account"]]
+        g["op"].append(r["op"])
+        g["names"].append(str(r["name"] or ""))
+        g["texts"].append(str(r["purpose"] or ""))
+        g["inns"].append(r["inn"])
+        g["rows"].append(r)
+        if r["debit"]:
+            g["debit"] += Decimal(str(r["debit"]))
+        if r["credit"]:
+            g["credit"] += Decimal(str(r["credit"]))
+
+    proposals = {}
+    for acct, g in groups.items():
+        accounts = [acct] * len(g["rows"])
+        cat, conf, per_row = propose_category_for_group(g["op"], g["names"], g["texts"], g["inns"], accounts)
+        proposals[acct] = {
+            "category": cat,
+            "confidence": conf,
+            "count": len(g["rows"]),
+            "debit_sum": g["debit"],
+            "credit_sum": g["credit"],
+            "sample_text": g["texts"][0][:160],
+            "sample_name": g["names"][0],
+            "rows": g["rows"],
+            "per_row": per_row,
+        }
+    return proposals
+
+
+if __name__ == "__main__":
+    path = sys.argv[1]
+    wb, ws, header_row, rows = load_raw_rows(path)
+    proposals = build_account_proposals(rows)
+
+    out_lines = []
+    out_lines.append(f"Jami qatorlar: {len(rows)}, noyob hisob raqamlari: {len(proposals)}\n")
+    for acct, info in sorted(proposals.items(), key=lambda kv: -kv[1]["count"]):
+        if info["confidence"] == "mixed":
+            out_lines.append(
+                f"{acct!r:28} -> ARALASH (har qator alohida)  soni={info['count']:4}\n"
+            )
+            for r, (cat, conf) in zip(info["rows"], info["per_row"]):
+                out_lines.append(
+                    f"    [{cat:16}/{conf:6}] {r['name']} | {str(r['purpose'])[:140]}\n"
+                )
+            continue
+        flag = "" if info["confidence"] == "high" else f"  <== TEKSHIRISH ({info['confidence']})"
+        out_lines.append(
+            f"{acct!r:28} -> {info['category']:20} soni={info['count']:4} "
+            f"debet={info['debit_sum']:>15} kredit={info['credit_sum']:>15}{flag}\n"
+            f"    namuna: {info['sample_name']} | {info['sample_text']}\n"
+        )
+    with open("account_proposals.txt", "w", encoding="utf-8") as f:
+        f.writelines(out_lines)
+    print("done, rows=", len(rows), "accounts=", len(proposals))
+
+
+# ======================================================================
+# 2-QISM — HISOBOT YASASH
+# ======================================================================
+
+DICT_PATH = "persist_dictionary.json"
+
+# Yakuniy hisobotdagi yagona shrift (buyurtmachi so'roviga ko'ra)
+FONT_NAME = "Times New Roman"
+FONT_SIZE = 14
+
+
+def _writable_cell(ws, row, col):
+    """Katakka yozish uchun tayyor obyekt qaytaradi. Ba'zi hisobotlarda
+    ustunlar birlashtirilgan (merged) bo'ladi — bunday katakka to'g'ridan
+    to'g'ri yozib bo'lmaydi, faqat birlashma boshidagi katakka yoziladi.
+    Shu boshlang'ich katakni topib beradi."""
+    cell = ws.cell(row=row, column=col)
+    if not isinstance(cell, MergedCell):
+        return cell
+    for rng in ws.merged_cells.ranges:
+        if (rng.min_row <= row <= rng.max_row) and (rng.min_col <= col <= rng.max_col):
+            return ws.cell(row=rng.min_row, column=rng.min_col)
+    return None
+
+
+# Boshlang'ich/yakuniy qoldiq turli banklarda turlicha yoziladi:
+#   "Остаток на начало периода: 511 258,38"   -> raqam matn ichida
+#   "Входящий остаток на 01.08.2026:  135 491 685,73"
+#   "Исходящий остаток на 31.08.2026"          -> raqam ALOHIDA katakda
+# Ustun/qator raqamiga tayanib bo'lmaydi (A4, B4, F4, H25 ... hammasi
+# uchraydi), shuning uchun kalit ibora bo'yicha qatorni topamiz.
+_OPEN_BALANCE_WORDS = ("входящий остаток", "остаток на начало", "начальный остаток")
+_CLOSE_BALANCE_WORDS = ("исходящий остаток", "остаток на конец", "конечный остаток")
+
+
+def _parse_balance_number(text):
+    """Matndan pul summasini ajratadi. FAQAT ikki nuqta (":") dan keyingi
+    qismga qaraydi — aks holda "Исходящий остаток на 31.08.2026" dagi
+    sana raqam deb o'qilib ketardi."""
+    if ":" not in text:
+        return None
+    tail = text.rsplit(":", 1)[1]
+    m = re.search(r"([\d\s\xa0]+[.,]\d+|[\d\s\xa0]+)\s*$", tail)
+    if not m:
+        return None
+    # Bo'shliqlar (oddiy va uzilmas) — ming ajratuvchi, olib tashlanadi.
+    # Vergul — kasr ajratuvchi, NUQTAGA aylantiriladi (o'chirilmaydi:
+    # "511 258,38" -> 511258.38, aks holda 51125838 bo'lib ketardi).
+    t = m.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
+    try:
+        return Decimal(t)
+    except Exception:
+        return None
+
+
+def _find_balances(ws):
+    """Varaqdan boshlang'ich va yakuniy qoldiqni topadi.
+
+    Kataklar birma-bir tekshiriladi (qator emas), chunki ba'zi
+    hisobotlarda IKKALA qoldiq ham BITTA qatorda turadi (A4 da
+    boshlang'ich, F4 da yakuniy), boshqalarida esa har xil qatorda va
+    raqam butunlay boshqa katakda bo'ladi (A25 da yozuv, H25 da son)."""
+    open_bal = close_bal = None
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            low = str(cell.value or "").strip().lower()
+            if not low:
+                continue
+            if any(w in low for w in _OPEN_BALANCE_WORDS):
+                kind = "open"
+            elif any(w in low for w in _CLOSE_BALANCE_WORDS):
+                kind = "close"
+            else:
+                continue
+            if (kind == "open" and open_bal is not None) or \
+               (kind == "close" and close_bal is not None):
+                continue
+
+            # 1) Raqam yozuvning o'zida bo'lishi mumkin
+            value = _parse_balance_number(str(cell.value))
+            # 2) Bo'lmasa — shu qatordagi alohida raqamli katakdan
+            if value is None:
+                for other in row:
+                    if isinstance(other.value, (int, float)):
+                        value = Decimal(str(other.value))
+                        break
+            if value is None:
+                continue
+
+            if kind == "open":
+                open_bal = value
+            else:
+                close_bal = value
+        if open_bal is not None and close_bal is not None:
+            break
+    return open_bal, close_bal
+
+
+def build_simplified_report(src_path, out_path):
+    wb, ws, layout, rows = load_raw_rows(src_path)
+
+    # classify every row independently, then sanity-check by raw account:
+    # if one raw account ends up split across >1 category, surface it so it
+    # gets extra attention (still applied per-row, never silently collapsed).
+    by_account = defaultdict(set)
+
+    results = []  # (row_dict, category, confidence)
+    for r in rows:
+        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        results.append((r, cat, conf))
+        by_account[r["account"]].add(cat)
+
+    # 1) "Счет" ustunini joyida kategoriya nomiga almashtiramiz (qolgan
+    #    bezaklar, ustun kengliklari o'zgarmaydi). Ustun indeksi hisobot formatiga qarab har xil (B, D ...), shuning
+    # uchun load_raw_rows aniqlagan joylashuvdan olamiz.
+    account_col = layout["cols"]["account"] + 1  # openpyxl 1-asosli
+    for r, cat, conf in results:
+        cell = _writable_cell(ws, r["excel_row"], account_col)
+        if cell is None:
+            continue
+        cell.value = cat
+        cell.number_format = "@"
+
+    # 2) build the Лист1 summary sheet (SUMIF over the report sheet)
+    report_sheet_name = ws.title
+    totals = defaultdict(lambda: [Decimal(0), Decimal(0)])  # cat -> [debet, kredit]
+    for r, cat, conf in results:
+        if r["debit"]:
+            totals[cat][0] += Decimal(str(r["debit"]))
+        if r["credit"]:
+            totals[cat][1] += Decimal(str(r["credit"]))
+
+    open_bal, close_bal = _find_balances(ws)
+
+    if "Лист1" in wb.sheetnames:
+        del wb["Лист1"]
+    summary = wb.create_sheet("Лист1", 0)
+
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    acc_fmt = '_-* #,##0_-;\\-* #,##0_-;_-* "-"??_-;_-@_-'
+
+    # Faqat fayl nomi ("АБ М Август"), to'liq yo'l emas. os.path.basename
+    # ishlatiladi, chunki fayl tanlash oynasi yo'lni "/" bilan qaytaradi va
+    # oldingi "\\" bo'yicha ajratish butun yo'lni sarlavhaga yozib qo'yardi.
+    title = os.path.splitext(os.path.basename(src_path))[0]
+    summary["B2"] = title
+    summary["B2"].font = Font(bold=True)
+    if open_bal is not None:
+        summary["C2"] = float(open_bal)
+    if close_bal is not None:
+        summary["D2"] = float(close_bal)
+    for col in ("B2", "C2", "D2"):
+        summary[col].font = Font(bold=True)
+        summary[col].border = border
+        summary[col].number_format = acc_fmt
+
+    headers = ["№", "Названия строк", " Дебет", " Кредит"]
+    for i, h in enumerate(headers):
+        c = summary.cell(row=3, column=1 + i, value=h)
+        c.border = border
+        c.number_format = acc_fmt
+
+    row_i = 4
+    total_debet = Decimal(0)
+    total_kredit = Decimal(0)
+    review_rows = []
+    for idx, (cat, (deb, kred)) in enumerate(sorted(totals.items()), start=1):
+        summary.cell(row=row_i, column=1, value=idx).border = border
+        c_name = summary.cell(row=row_i, column=2, value=cat)
+        c_name.border = border
+        if deb:
+            c = summary.cell(row=row_i, column=3, value=float(deb))
+            c.border = border
+            c.number_format = acc_fmt
+            total_debet += deb
+        if kred:
+            c = summary.cell(row=row_i, column=4, value=float(kred))
+            c.border = border
+            c.number_format = acc_fmt
+            total_kredit += kred
+        for col in (1, 2, 3, 4):
+            summary.cell(row=row_i, column=col).number_format = acc_fmt
+            summary.cell(row=row_i, column=col).border = border
+        row_i += 1
+
+    summary.cell(row=row_i, column=2, value="Общий итог").border = border
+    c = summary.cell(row=row_i, column=3, value=float(total_debet))
+    c.number_format = acc_fmt
+    c.border = border
+    c = summary.cell(row=row_i, column=4, value=float(total_kredit))
+    c.number_format = acc_fmt
+    c.border = border
+    summary.cell(row=row_i, column=1).border = border
+
+    summary.column_dimensions["A"].width = 5.2
+    summary.column_dimensions["B"].width = 24
+    summary.column_dimensions["C"].width = 16
+    summary.column_dimensions["D"].width = 16
+
+    # Butun kitob bo'ylab yagona shrift: Times New Roman, 14. Qalinlik
+    # (bold) va boshqa bezaklar qayerda bo'lsa, o'sha holicha saqlanadi.
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                old = cell.font
+                cell.font = Font(
+                    name=FONT_NAME,
+                    size=FONT_SIZE,
+                    bold=old.bold,
+                    italic=old.italic,
+                    underline=old.underline,
+                    color=old.color,
+                )
+
+    wb.save(out_path)
+
+    # 3) Past ishonch bilan belgilangan qatorlar soni. Avval bu ro'yxat
+    #    alohida "_tekshirish.txt" fayliga yozilardi, lekin buyurtmachiga
+    #    faqat Excel fayl kerak — endi bu son ilova jurnalida ko'rsatiladi.
+    review_count = sum(1 for _r, _cat, conf in results if conf in ("guess", "review"))
+
+    return {
+        "out_path": out_path,
+        "review_count": review_count,
+        "total_debet": total_debet,
+        "total_kredit": total_kredit,
+    }
+
+
+
+# ======================================================================
+# 3-QISM — INTERFEYS
+# ======================================================================
+
+def find_excel_exe():
+    """Locate the real Excel.exe via the Windows "App Paths" registry,
+    bypassing whatever program .xlsx happens to be (mis)associated with on
+    this machine (a common support issue: someone once chose "Open with ->
+    Notepad -> always use this app" for .xlsx files)."""
+    candidates = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\EXCEL.EXE"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\EXCEL.EXE"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\EXCEL.EXE"),
+    ]
+    for hive, subkey in candidates:
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                path, _ = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+def resource_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = resource_base_dir()
+
+
+class FileRow:
+    def __init__(self, path):
+        self.path = path
+        self.status = "Kutmoqda"
+        self.error = None
+        self.out_path = None
+
+
+class UnresolvedDialog(tk.Toplevel):
+    """Modal oyna: hisobotlarda kategoriyasi aniqlanmagan (nomlanmagan)
+    kontragentlar ro'yxatini ko'rsatadi va har biri uchun nom/kategoriya
+    kiritishni so'raydi. Kiritilgan qiymatlar persist_dictionary.json ga
+    saqlanadi va keyingi barcha loyihalarda avtomatik tanilib qoladi."""
+
+    def __init__(self, parent, unresolved):
+        super().__init__(parent)
+        self.title("Nomlanmagan kontragentlar topildi")
+        self.geometry("760x520")
+        self.minsize(600, 420)
+        self.transient(parent)
+        self.grab_set()
+        self.result_entries = {}  # key -> (info, tk.StringVar)
+        self.confirmed = False
+
+        header = ttk.Frame(self, padding=10)
+        header.pack(fill="x")
+        ttk.Label(
+            header,
+            text=(
+                f"{len(unresolved)} ta kontragent hech qanday kategoriyaga to'g'ri kelmadi.\n"
+                "Har biri uchun kategoriya nomini kiriting (bo'sh qoldirsangiz \"?\" bo'lib qoladi). "
+                "Kiritganlaringiz keyingi loyihalar uchun ham eslab qolinadi."
+            ),
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w")
+
+        canvas = tk.Canvas(self, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        scrollbar.pack(side="left", fill="y", pady=(0, 10))
+
+        for key, info in sorted(unresolved.items(), key=lambda kv: -kv[1]["count"]):
+            row = ttk.Frame(inner, padding=6, relief="groove", borderwidth=1)
+            row.pack(fill="x", padx=6, pady=4)
+
+            label_bits = []
+            if info["name"]:
+                label_bits.append(info["name"])
+            if info.get("account"):
+                label_bits.append(f"Xisob raqam {info['account']}")
+            elif info.get("inn"):
+                label_bits.append(f"ИНН {info['inn']}")
+            if info.get("mfo"):
+                label_bits.append(f"МФО {info['mfo']}")
+            label_bits.append(f"{info['count']} qatorda uchraydi")
+            if info.get("always_ask"):
+                label_bits.append("HAR SAFAR SO'RALADI (ko'p maqsadli hisob)")
+            ttk.Label(row, text="  |  ".join(label_bits), font=("", 9, "bold")).pack(anchor="w")
+            if info["sample"]:
+                ttk.Label(row, text=info["sample"], foreground="#555", wraplength=680).pack(anchor="w")
+
+            entry_row = ttk.Frame(row)
+            entry_row.pack(fill="x", pady=(4, 0))
+            ttk.Label(entry_row, text="Kategoriya nomi:").pack(side="left")
+            var = tk.StringVar(value="")
+            ttk.Entry(entry_row, textvariable=var, width=30).pack(side="left", padx=(6, 0))
+            self.result_entries[key] = (info, var)
+
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
+        footer = ttk.Frame(self, padding=10)
+        footer.pack(side="bottom", fill="x", before=canvas)
+        ttk.Button(footer, text="Saqlash va davom etish", command=self._on_confirm).pack(side="right")
+        ttk.Button(footer, text="Bekor qilish", command=self._on_cancel).pack(side="right", padx=(0, 8))
+
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _on_cancel(self):
+        self.confirmed = False
+        self.destroy()
+
+    def get_assignments(self):
+        """Foydalanuvchi to'ldirgan qatorlarni qaytaradi.
+
+        Har bir element: (info, guruh). `info` ichida "always_ask" bayrog'i
+        bor — G'aznachilik kabi ko'p maqsadli kontragentlar uchun javob
+        diskka yozilmaydi, faqat shu faylga qo'llaniladi."""
+        out = []
+        for key, (info, var) in self.result_entries.items():
+            cat = var.get().strip()
+            if cat:
+                out.append((info, cat))
+        return out
+
+
+class GroupsManagerDialog(tk.Toplevel):
+    """Guruhlar (kategoriyalar) boshqaruv oynasi. Foydalanuvchi ilovani
+    birinchi marta ishga tushirganda — yoki istalgan payt — ma'lum hisob
+    raqam (ИНН) yoki kompaniya nomi uchun guruh (kategoriya) belgilab
+    qo'yishi mumkin, fayl tashlanishini kutmasdan. Barcha yozuvlar
+    persist_dictionary.json ga saqlanadi va shu zahoti ishlatila boshlaydi."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Guruhlarni boshqarish")
+        self.geometry("720x560")
+        self.minsize(600, 420)
+        self.transient(parent)
+        self.grab_set()
+
+        self.mapping = dict(load_all_mappings())
+        self.rows = {}  # key -> (row_frame, id_var, cat_var)
+
+        header = ttk.Frame(self, padding=14)
+        header.pack(fill="x")
+        ttk.Label(header, text="Guruhlarni boshqarish", font=("Segoe UI Semibold", 13)).pack(anchor="w")
+        ttk.Label(
+            header,
+            text=(
+                "Bu yerda hisob raqam yoki kompaniya nomi qaysi guruhga tegishli ekanini oldindan "
+                "belgilab qo'yishingiz mumkin. Bitta hisob raqam orqali turli maqsaddagi to'lovlar "
+                "o'tsa (masalan G'aznachilik: soliq, elektr...), \"To'lov maqsadi matni bo'yicha\" "
+                "variantini tanlab, matndan bir bo'lakni (masalan \"электр учун\") kiriting — "
+                "shunda ilova aynan shu matnli qatorlarni alohida guruhga ajratadi."
+            ),
+            wraplength=680, foreground="#666666", justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        add_box = ttk.LabelFrame(self, text="Yangi guruh qo'shish", padding=10)
+        add_box.pack(fill="x", padx=14, pady=(10, 0))
+
+        self.new_type = tk.StringVar(value="account")
+        type_row = ttk.Frame(add_box)
+        type_row.pack(fill="x")
+        ttk.Radiobutton(type_row, text="Xisob raqam bo'yicha", variable=self.new_type, value="account").pack(side="left")
+        ttk.Radiobutton(type_row, text="Nomi bo'yicha", variable=self.new_type, value="name").pack(side="left", padx=(12, 0))
+        ttk.Radiobutton(
+            type_row, text="To'lov maqsadi matni bo'yicha", variable=self.new_type, value="text"
+        ).pack(side="left", padx=(12, 0))
+
+        fields_row = ttk.Frame(add_box)
+        fields_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(fields_row, text="Xisob raqam / Nomi:").pack(side="left")
+        self.new_id_var = tk.StringVar()
+        ttk.Entry(fields_row, textvariable=self.new_id_var, width=22).pack(side="left", padx=(6, 16))
+        ttk.Label(fields_row, text="Guruh nomi:").pack(side="left")
+        self.new_cat_var = tk.StringVar()
+        ttk.Entry(fields_row, textvariable=self.new_cat_var, width=22).pack(side="left", padx=(6, 16))
+        ttk.Button(fields_row, text="+ Qo'shish", command=self._add_row).pack(side="left")
+
+        pick_row = ttk.Frame(add_box)
+        pick_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(pick_row, text="📄 Excel'dan tanlash...", command=self._pick_from_excel).pack(side="left")
+        ttk.Label(
+            pick_row,
+            text="— Xisob raqamni qo'lda yozish o'rniga, haqiqiy hisobot faylini ochib, kontragentlarni belgilab tanlang.",
+            foreground="#888888",
+        ).pack(side="left", padx=(8, 0))
+
+        list_label = ttk.Label(self, text="Mavjud guruhlar:", font=("Segoe UI Semibold", 10))
+        list_label.pack(anchor="w", padx=14, pady=(14, 4))
+
+        canvas_frame = ttk.Frame(self)
+        canvas_frame.pack(fill="both", expand=True, padx=14)
+        self.canvas = tk.Canvas(canvas_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="left", fill="y")
+
+        self._render_rows()
+
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
+        footer = ttk.Frame(self, padding=14)
+        footer.pack(side="bottom", fill="x", before=canvas_frame)
+        ttk.Button(footer, text="Saqlash", style="Accent.TButton", command=self._save).pack(side="right")
+        ttk.Button(footer, text="Yopish", command=self.destroy).pack(side="right", padx=(0, 8))
+
+    def _render_rows(self):
+        for child in self.inner.winfo_children():
+            child.destroy()
+        self.rows = {}
+        if not self.mapping:
+            ttk.Label(self.inner, text="Hali hech qanday guruh belgilanmagan.", foreground="#888888").pack(
+                anchor="w", pady=10
+            )
+            return
+        for key, cat in sorted(self.mapping.items()):
+            self._add_row_widget(key, cat)
+
+    def _add_row_widget(self, key, category):
+        if key.startswith(_TEXT_KEY_PREFIX):
+            display_id = key[len(_TEXT_KEY_PREFIX):]
+            label_prefix = "Matn: "
+        elif key.startswith(_NAME_KEY_PREFIX):
+            display_id = key[len(_NAME_KEY_PREFIX):]
+            label_prefix = "Nomi: "
+        else:
+            display_id = key
+            label_prefix = "Xisob raqam: "
+
+        row = ttk.Frame(self.inner, padding=6, relief="groove", borderwidth=1)
+        row.pack(fill="x", pady=3)
+        ttk.Label(row, text=f"{label_prefix}{display_id}", width=32, anchor="w").pack(side="left")
+        cat_var = tk.StringVar(value=category)
+        ttk.Entry(row, textvariable=cat_var, width=22).pack(side="left", padx=(6, 6))
+        ttk.Button(row, text="Saqlash", command=lambda k=key, v=cat_var: self._update_row(k, v)).pack(side="left")
+        ttk.Button(row, text="O'chirish", command=lambda k=key: self._delete_row(k)).pack(side="left", padx=(6, 0))
+        self.rows[key] = (row, cat_var)
+
+    def _update_row(self, key, var):
+        new_cat = var.get().strip()
+        if not new_cat:
+            messagebox.showwarning("Diqqat", "Guruh nomi bo'sh bo'lishi mumkin emas.")
+            return
+        self.mapping[key] = new_cat
+        save_all_mappings(self.mapping)
+        messagebox.showinfo("Saqlandi", "Guruh yangilandi.")
+
+    def _delete_row(self, key):
+        if not messagebox.askyesno("Tasdiqlash", "Ushbu guruhni o'chirishni tasdiqlaysizmi?"):
+            return
+        self.mapping.pop(key, None)
+        save_all_mappings(self.mapping)
+        self._render_rows()
+
+    def _pick_from_excel(self):
+        path = filedialog.askopenfilename(
+            title="Hisobot faylini tanlang",
+            filetypes=[("Excel fayllar", "*.xlsx"), ("Barcha fayllar", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            _wb, _ws, _hdr, rows = load_raw_rows(path)
+        except Exception as e:
+            messagebox.showerror("Xato", f"Faylni o'qib bo'lmadi:\n{e}")
+            return
+        parties = unique_counterparties(rows)
+        if not parties:
+            messagebox.showinfo("Diqqat", "Faylda kontragentlar topilmadi.")
+            return
+        picker = CounterpartyPickerDialog(self, parties)
+        self.wait_window(picker)
+        if picker.applied:
+            self.mapping = dict(load_all_mappings())
+            self._render_rows()
+
+    def _add_row(self):
+        ident = self.new_id_var.get().strip()
+        cat = self.new_cat_var.get().strip()
+        if not ident or not cat:
+            messagebox.showwarning("Diqqat", "Xisob raqam / Nomi / Matn va Guruh nomini kiriting.")
+            return
+        kind = self.new_type.get()
+        if kind == "account":
+            key = ident
+        elif kind == "text":
+            key = f"{_TEXT_KEY_PREFIX}{ident}"
+        else:
+            key = f"{_NAME_KEY_PREFIX}{ident}"
+        self.mapping[key] = cat
+        save_all_mappings(self.mapping)
+        self.new_id_var.set("")
+        self.new_cat_var.set("")
+        self._render_rows()
+
+    def _save(self):
+        save_all_mappings(self.mapping)
+        self.destroy()
+
+
+class CounterpartyPickerDialog(tk.Toplevel):
+    """Xom hisobot faylini jadval (Excel'ga o'xshash) ko'rinishida ochib,
+    foydalanuvchi bir nechta kontragentni belgilab (check qilib), bittasiga
+    guruh nomi berib bir yo'la qo'sha oladigan oyna. INN'ni qo'lda yozish
+    o'rniga, haqiqiy fayldan tanlab olish uchun."""
+
+    def __init__(self, parent, parties):
+        super().__init__(parent)
+        self.title("Fayldan kontragent tanlash")
+        self.geometry("860x560")
+        self.minsize(680, 420)
+        self.transient(parent)
+        self.grab_set()
+        self.applied = False
+        self.parties = parties
+        self.checked = set()
+
+        header = ttk.Frame(self, padding=(14, 14, 14, 6))
+        header.pack(fill="x")
+        ttk.Label(header, text="Fayldan kontragent tanlash", font=("Segoe UI Semibold", 13)).pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Kerakli qatorlarni belgilang (katakchani bosing), so'ng pastda guruh nomini kiritib qo'shing.",
+            foreground="#666666", wraplength=820,
+        ).pack(anchor="w", pady=(2, 0))
+
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill="both", expand=True, padx=14, pady=(8, 0))
+
+        columns = ("check", "account", "mfo", "name", "sample")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="none", height=6)
+        self.tree.heading("check", text="✓")
+        self.tree.heading("account", text="Xisob raqam")
+        self.tree.heading("mfo", text="МФО")
+        self.tree.heading("name", text="Nomi")
+        self.tree.heading("sample", text="Namuna matn")
+        self.tree.column("check", width=36, anchor="center")
+        self.tree.column("account", width=140, anchor="w")
+        self.tree.column("mfo", width=80, anchor="w")
+        self.tree.column("name", width=200, anchor="w")
+        self.tree.column("sample", width=360, anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Button-1>", self._on_click)
+
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scroll.pack(side="left", fill="y")
+        self.tree.configure(yscrollcommand=scroll.set)
+
+        for key, info in sorted(parties.items(), key=lambda kv: (kv[1]["name"] or kv[1]["account"]).lower()):
+            self.tree.insert(
+                "", "end", iid=key,
+                values=("☐", info["account"], info.get("mfo", ""), info["name"], info["sample"]),
+            )
+
+        # before=... bilan footer paketlash tartibida kengayuvchi
+        # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
+        # kesilmaydi, o'rniga ro'yxat qisqaradi.
+        footer = ttk.Frame(self, padding=14)
+        footer.pack(side="bottom", fill="x", before=tree_frame)
+        ttk.Label(footer, text="Guruh nomi:").pack(side="left")
+        self.cat_var = tk.StringVar()
+        ttk.Entry(footer, textvariable=self.cat_var, width=22).pack(side="left", padx=(6, 14))
+        self.count_label = ttk.Label(footer, text="0 ta belgilandi")
+        self.count_label.pack(side="left")
+        ttk.Button(footer, text="Guruhga qo'shish", style="Accent.TButton", command=self._apply).pack(side="right")
+        ttk.Button(footer, text="Yopish", command=self.destroy).pack(side="right", padx=(0, 8))
+
+    def _on_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        row = self.tree.identify_row(event.y)
+        if not row or self.tree.identify_column(event.x) != "#1":
+            return
+        if row in self.checked:
+            self.checked.remove(row)
+            self.tree.set(row, "check", "☐")
+        else:
+            self.checked.add(row)
+            self.tree.set(row, "check", "☑")
+        self.count_label.config(text=f"{len(self.checked)} ta belgilandi")
+
+    def _apply(self):
+        if not self.checked:
+            messagebox.showwarning("Diqqat", "Kamida bitta qatorni belgilang.")
+            return
+        cat = self.cat_var.get().strip()
+        if not cat:
+            messagebox.showwarning("Diqqat", "Guruh nomini kiriting.")
+            return
+        for key in self.checked:
+            info = self.parties[key]
+            if info["account"]:
+                save_learned_category(info["account"], "", cat)
+            else:
+                save_learned_category("", info["name"], cat)
+        self.applied = True
+        messagebox.showinfo("Saqlandi", f"{len(self.checked)} ta kontragent \"{cat}\" guruhiga qo'shildi.")
+        self.destroy()
+
+
+class App(tk.Tk):
+    STATUS_COLORS = {
+        "Kutmoqda": "#666666",
+        "Ishlanmoqda...": "#0a66c2",
+        "Tayyor": "#1a7f37",
+        "Xato": "#c62828",
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.title("SoddaHisobot")
+        self._apply_dpi_scaling()
+        self.geometry("960x680")
+        # Kichraytirilganda ham barcha tugmalar ko'rinib turadigan eng kichik
+        # o'lcham (ro'yxat va jurnal qisqaradi, tugmalar kesilmaydi).
+        self.minsize(780, 520)
+
+        sv_ttk.set_theme("light")
+        self._setup_fonts()
+
+        self.files = []  # list[FileRow]
+        self.out_dir = tk.StringVar(value="")
+        self.is_running = False
+        self.ui_queue = queue.Queue()
+
+        self._build_ui()
+        self._last_state = self.state()
+        self.bind("<Configure>", self._on_root_configure)
+        # Kompyuterda .exe ning bir necha nusxasi qolib ketishi mumkin
+        # (qayta-qayta qo'lda yuklanganda). Qaysi nusxa ochilganini bilish
+        # uchun joylashuvni jurnalga yozamiz — aks holda "menda eski versiya
+        # ko'rinyapti" degan holatni tekshirib bo'lmaydi.
+        self._log(f"Versiya v{CORE_VERSION}  |  Joylashuvi: {os.path.abspath(sys.executable)}")
+        self.after(100, self._poll_queue)
+        threading.Thread(target=send_ping, daemon=True).start()
+
+    def _on_root_configure(self, event):
+        """Windowsda oyna maximize/restore qilinganda ba'zi ttk widget'lar
+        (ayniqsa sv_ttk kabi rasm asosida chiziladigan zamonaviy temalar)
+        darhol qayta chizilmay, qora "yamalgan" joylar ko'rinib qolishi
+        mumkin — bu Tk/DWM darajasidagi tanish nuqson, ilova mantig'iga
+        aloqasi yo'q. Oyna holati (normal/zoomed) chindan o'zgarganda butun
+        widget daraxtini majburan qayta chizib, shu nuqsonni oldini olamiz."""
+        if event.widget is not self:
+            return
+        try:
+            state = self.state()
+        except tk.TclError:
+            return
+        if state != self._last_state:
+            self._last_state = state
+            self.after(50, self._force_full_redraw)
+
+    def _force_full_redraw(self):
+        def redraw(widget):
+            widget.update_idletasks()
+            for child in widget.winfo_children():
+                redraw(child)
+        try:
+            redraw(self)
+        except tk.TclError:
+            pass
+
+    # ---------------------------------------------------------- UI layout
+    def _apply_dpi_scaling(self):
+        """_enable_dpi_awareness() Windows'ga haqiqiy piksel o'lchamlarini
+        ko'rsatishga majbur qiladi; shu real DPI qiymatiga qarab Tk'ning
+        ichki masshtabini (scaling) moslaymiz — aks holda widget'lar
+        yuqori-DPI monitorlarda juda mayda yoki noto'g'ri o'lchamda
+        chizilib, oyna o'lchami o'zgarganda joylashuv buzilib qolishi
+        mumkin edi."""
+        try:
+            dpi = self.winfo_fpixels("1i")
+            if dpi > 0:
+                self.tk.call("tk", "scaling", dpi / 72.0)
+        except Exception:
+            pass
+
+    def _setup_fonts(self):
+        base = tkfont.nametofont("TkDefaultFont")
+        base.configure(family="Segoe UI", size=10)
+        self.option_add("*Font", base)
+        self.heading_font = tkfont.Font(family="Segoe UI Semibold", size=17)
+        self.subtitle_font = tkfont.Font(family="Segoe UI", size=10)
+        self.step_font = tkfont.Font(family="Segoe UI Semibold", size=11)
+        self.mono_font = tkfont.Font(family="Consolas", size=9)
+
+    def _on_root_resize(self, event):
+        # Tavsif matni oyna torayganda so'zma-so'z pastga tushib
+        # ("wrap" bo'lib) yozilsin — bitta uzun qatorda kesilib qolmasin.
+        try:
+            self.subtitle_label.configure(wraplength=max(300, event.width - 28))
+        except Exception:
+            pass
+
+    def _step_frame(self, parent, title):
+        """A labeled 'card' section used to break the workflow into clear,
+        numbered steps so a non-technical user always knows what's next."""
+        frame = ttk.LabelFrame(parent, text=title, padding=14)
+        return frame
+
+    def _build_ui(self):
+        pad = 14
+        root = ttk.Frame(self, padding=pad)
+        root.pack(fill="both", expand=True)
+
+        header = ttk.Frame(root)
+        header.pack(fill="x", pady=(0, 14))
+        title_row = ttk.Frame(header)
+        title_row.pack(fill="x")
+        title_row.columnconfigure(0, weight=1)
+        title_group = ttk.Frame(title_row)
+        title_group.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_group, text="SoddaHisobot", font=self.heading_font).pack(side="left")
+        ttk.Label(
+            title_group, text=f"  v{CORE_VERSION}", font=self.subtitle_font, foreground="#999999"
+        ).pack(side="left", anchor="s", pady=(0, 3))
+        self.subtitle_label = ttk.Label(
+            header,
+            text="Xom Hamkorbank hisobotlarini tanlang — har biri alohida Excel faylga aylantiriladi.",
+            font=self.subtitle_font,
+            foreground="#666666",
+        )
+        self.subtitle_label.pack(anchor="w")
+        root.bind("<Configure>", self._on_root_resize)
+
+        step1 = self._step_frame(root, "1-qadam · Fayllarni tanlang")
+        step1.pack(fill="x", pady=(0, 10))
+        row1 = ttk.Frame(step1)
+        row1.pack(fill="x")
+        ttk.Button(row1, text="📂 Fayllarni tanlash...", command=self.pick_files).pack(side="left")
+        ttk.Button(row1, text="Ro'yxatni tozalash", command=self.clear_files).pack(side="left", padx=(8, 0))
+        ttk.Button(row1, text="🏷 Guruhlarni boshqarish...", command=self.open_groups_manager).pack(side="left", padx=(8, 0))
+        self.count_label = ttk.Label(row1, text="0 ta fayl tanlangan", font=self.step_font)
+        self.count_label.pack(side="left", padx=(16, 0))
+
+        step2 = self._step_frame(root, "2-qadam · Natijalarni qayerga saqlash")
+        step2.pack(fill="x", pady=(0, 10))
+        out_frame = ttk.Frame(step2)
+        out_frame.pack(fill="x")
+        self.out_entry = ttk.Entry(out_frame, textvariable=self.out_dir)
+        self.out_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(out_frame, text="💾 Papka tanlash...", command=self.pick_out_dir).pack(side="left")
+
+        # Jurnal va 3-qadam ichidagi tugmalar "pastdan" joylashtiriladi:
+        # pack side="bottom" bo'lgan elementlar o'z joyini birinchi bo'lib
+        # egallaydi, shuning uchun oyna kichraytirilganda ular kesilib
+        # qolmaydi — o'rniga yuqoridagi ro'yxat qisqaradi.
+        log_frame = ttk.LabelFrame(root, text="Jurnal", padding=(10, 6))
+        log_frame.pack(side="bottom", fill="x", pady=(10, 0))
+        self.log = tk.Text(
+            log_frame, height=4, wrap="word", state="disabled",
+            font=self.mono_font, relief="flat", borderwidth=0,
+            background="#f5f5f5" if sv_ttk.get_theme() == "light" else "#1e1e1e",
+        )
+        self.log.pack(fill="both", expand=True)
+
+        step3 = self._step_frame(root, "3-qadam · Boshlang va kuzating")
+        step3.pack(fill="both", expand=True)
+
+        action_row = ttk.Frame(step3)
+        action_row.pack(side="bottom", fill="x")
+        self.start_btn = ttk.Button(action_row, text="▶  Boshlash", style="Accent.TButton", command=self.start_processing)
+        self.start_btn.pack(side="left", ipadx=6)
+        self.open_out_btn = ttk.Button(action_row, text="📁 Papkani ochish", command=self.open_out_dir)
+        self.open_out_btn.pack(side="left", padx=(8, 0))
+        self.open_excel_btn = ttk.Button(action_row, text="📊 Excelda ochish", command=self.open_selected_in_excel)
+        self.open_excel_btn.pack(side="left", padx=(8, 0))
+        self.status_label = ttk.Label(action_row, text="Tayyor", font=self.step_font)
+        self.status_label.pack(side="right")
+
+        self.progress = ttk.Progressbar(step3, orient="horizontal", mode="determinate")
+        self.progress.pack(side="bottom", fill="x", pady=(0, 10))
+
+        ttk.Label(
+            step3, text="Tayyor bo'lgan faylni ochish uchun ustiga ikki marta bosing.",
+            foreground="#888888",
+        ).pack(side="bottom", anchor="w", pady=(0, 8))
+
+        list_frame = ttk.Frame(step3)
+        list_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        columns = ("file", "status")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended", height=4)
+        self.tree.heading("file", text="Fayl")
+        self.tree.heading("status", text="Holati")
+        self.tree.column("file", width=600, anchor="w", stretch=True)
+        self.tree.column("status", width=160, anchor="w", stretch=False)
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
+
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        scroll.pack(side="left", fill="y")
+        self.tree.configure(yscrollcommand=scroll.set)
+
+        self.tree.tag_configure("Kutmoqda", foreground=self.STATUS_COLORS["Kutmoqda"])
+        self.tree.tag_configure("Ishlanmoqda...", foreground=self.STATUS_COLORS["Ishlanmoqda..."])
+        self.tree.tag_configure("Tayyor", foreground=self.STATUS_COLORS["Tayyor"])
+        self.tree.tag_configure("Xato", foreground=self.STATUS_COLORS["Xato"])
+
+    # ------------------------------------------------------------ actions
+    def pick_files(self):
+        paths = filedialog.askopenfilenames(
+            title="Xom hisobot fayllarini tanlang",
+            filetypes=[("Excel fayllar", "*.xlsx"), ("Barcha fayllar", "*.*")],
+        )
+        if not paths:
+            return
+        existing = {f.path for f in self.files}
+        for p in paths:
+            if p not in existing:
+                self.files.append(FileRow(p))
+        self._refresh_tree()
+
+    def clear_files(self):
+        if self.is_running:
+            return
+        self.files = []
+        self._refresh_tree()
+
+    def open_groups_manager(self):
+        dialog = GroupsManagerDialog(self)
+        self.wait_window(dialog)
+
+    def pick_out_dir(self):
+        d = filedialog.askdirectory(title="Natijalarni saqlash papkasini tanlang")
+        if d:
+            self.out_dir.set(d)
+
+    def open_out_dir(self):
+        d = self.out_dir.get().strip()
+        if d and os.path.isdir(d):
+            os.startfile(d)
+        else:
+            messagebox.showinfo("Diqqat", "Avval saqlash papkasini tanlang.")
+
+    def _on_tree_double_click(self, _event):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        f = self.files[idx]
+        if f.out_path and os.path.exists(f.out_path):
+            self._open_path_in_excel(f.out_path)
+
+    def open_selected_in_excel(self):
+        sel = self.tree.selection()
+        if sel:
+            targets = [self.files[int(i)] for i in sel]
+        else:
+            targets = self.files
+        paths = [f.out_path for f in targets if f.out_path and os.path.exists(f.out_path)]
+        if not paths:
+            messagebox.showinfo(
+                "Diqqat",
+                "Ochish uchun tayyor natija fayli topilmadi. Avval \"Boshlash\" bilan qayta ishlashni yakunlang.",
+            )
+            return
+        excel_exe = find_excel_exe()
+        if not excel_exe:
+            messagebox.showwarning(
+                "Excel topilmadi",
+                "Bu kompyuterda Microsoft Excel ro'yxatdan o'tmagan.\n\n"
+                "Fayllar to'g'ri .xlsx formatida saqlangan, lekin ularni ochish uchun "
+                "Excel (yoki LibreOffice Calc, WPS Office kabi mos dastur) o'rnatilgan bo'lishi kerak.\n\n"
+                "Agar Excel o'rnatilgan bo'lsa-yu, fayl baribir Notepad'da ochilsa: fayl ustida "
+                "o'ng tugmani bosing -> \"Open with\" -> Excel -> \"Always use this app\".",
+            )
+            return
+        for p in paths:
+            try:
+                subprocess.Popen([excel_exe, p])
+            except Exception as e:
+                self._log(f"XATO: Excelda ochib bo'lmadi ({os.path.basename(p)}): {e}")
+
+    def _open_path_in_excel(self, path):
+        excel_exe = find_excel_exe()
+        if excel_exe:
+            try:
+                subprocess.Popen([excel_exe, path])
+                return
+            except Exception as e:
+                self._log(f"XATO: Excelda ochib bo'lmadi ({os.path.basename(path)}): {e}")
+        os.startfile(path)
+
+    def _refresh_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for i, f in enumerate(self.files):
+            self.tree.insert("", "end", iid=str(i), values=(f.path, f.status), tags=(f.status,))
+        self.count_label.config(text=f"{len(self.files)} ta fayl tanlangan")
+
+    def _log(self, msg):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def start_processing(self):
+        if self.is_running:
+            return
+        if not self.files:
+            messagebox.showwarning("Diqqat", "Avval kamida bitta fayl tanlang.")
+            return
+        out_dir = self.out_dir.get().strip()
+        if not out_dir:
+            messagebox.showwarning("Diqqat", "Avval saqlash papkasini tanlang.")
+            return
+        if not os.path.isdir(out_dir):
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Xato", f"Papka yaratib bo'lmadi:\n{e}")
+                return
+
+        for f in self.files:
+            f.status = "Kutmoqda"
+            f.error = None
+        self._refresh_tree()
+
+        # Oldingi fayllar uchun berilgan "faqat shu safar" javoblari
+        # yangi ishga o'tib ketmasin.
+        clear_session_overrides()
+        self.is_running = True
+        self.start_btn.configure(state="disabled")
+        self.status_label.configure(text="Tekshirilmoqda...")
+        self._log(f"--- Skanerlash boshlandi: {len(self.files)} ta fayl ---")
+
+        t = threading.Thread(target=self._scan_worker, args=(out_dir,), daemon=True)
+        t.start()
+
+    def _scan_worker(self, out_dir):
+        """Ishlov berishdan oldin: barcha tanlangan fayllarni o'qib, hech
+        qanday kategoriyaga to'g'ri kelmagan ("?") kontragentlarni yig'ib
+        chiqadi, shu bilan foydalanuvchidan bir marta so'rab olib bo'lgach
+        haqiqiy qayta ishlash boshlanadi."""
+        unresolved = {}
+        for f in self.files:
+            try:
+                _wb, _ws, _hdr, rows = load_raw_rows(f.path)
+            except Exception as e:
+                self.ui_queue.put(("log", None, f"Skanerlashda xato ({os.path.basename(f.path)}): {e}", None))
+                continue
+            for key, info in find_unresolved(rows).items():
+                if key not in unresolved:
+                    unresolved[key] = dict(info)
+                else:
+                    unresolved[key]["count"] += info["count"]
+        self.ui_queue.put(("scan_done", out_dir, unresolved, None))
+
+    def _handle_scan_done(self, out_dir, unresolved):
+        if unresolved:
+            self._log(f"{len(unresolved)} ta nomlanmagan/kategoriyalanmagan kontragent topildi.")
+            dialog = UnresolvedDialog(self, unresolved)
+            self.wait_window(dialog)
+            if not dialog.confirmed:
+                self._log("Bekor qilindi.")
+                self.is_running = False
+                self.start_btn.configure(state="normal")
+                self.status_label.configure(text="Tayyor")
+                return
+            assignments = dialog.get_assignments()
+            for info, cat in assignments:
+                nomi = info.get("name") or info.get("account") or ""
+                if info.get("always_ask"):
+                    # G'aznachilik kabi kontragent: bugun soliq, ertaga
+                    # elektr bo'lishi mumkin. Shuning uchun diskka
+                    # yozmaymiz — javob faqat shu faylga tegishli va
+                    # keyingi safar yana so'raladi.
+                    set_session_override(
+                        info.get("account") or "", info.get("purpose") or "", cat
+                    )
+                    self._log(f"Shu fayl uchun: {nomi[:40]} -> {cat}")
+                else:
+                    save_learned_category(
+                        info.get("account") or "", info.get("name") or "", cat
+                    )
+                    self._log(f"Saqlandi: {nomi[:40]} -> {cat}")
+        else:
+            self._log("Nomlanmagan kontragent topilmadi.")
+
+        self.progress.configure(maximum=len(self.files), value=0)
+        self.status_label.configure(text="Ishlanmoqda...")
+        self._log(f"--- Qayta ishlash boshlandi: {len(self.files)} ta fayl ---")
+        t = threading.Thread(target=self._worker, args=(out_dir,), daemon=True)
+        t.start()
+
+    def _worker(self, out_dir):
+        done_ok = 0
+        done_err = 0
+        for idx, f in enumerate(self.files):
+            self.ui_queue.put(("status", idx, "Ishlanmoqda...", None))
+            base = os.path.splitext(os.path.basename(f.path))[0]
+            out_path = os.path.join(out_dir, f"{base} - soddalashtirilgan.xlsx")
+            try:
+                info = build_simplified_report(f.path, out_path)
+                f.out_path = out_path
+                self.ui_queue.put(("status", idx, "Tayyor", None))
+                self.ui_queue.put((
+                    "log", None,
+                    f"OK: {os.path.basename(f.path)} -> {os.path.basename(out_path)} "
+                    f"({info['review_count']} ta tekshirish bandi)",
+                    None,
+                ))
+                done_ok += 1
+            except Exception as e:
+                err = "".join(traceback.format_exception_only(type(e), e)).strip()
+                self.ui_queue.put(("status", idx, "Xato", err))
+                self.ui_queue.put(("log", None, f"XATO: {os.path.basename(f.path)} -> {err}", None))
+                done_err += 1
+            self.ui_queue.put(("progress", idx + 1, None, None))
+        self.ui_queue.put(("done", done_ok, done_err, None))
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, a, b, _c = self.ui_queue.get_nowait()
+                if kind == "status":
+                    idx, status = a, b
+                    self.files[idx].status = status
+                    self.tree.item(str(idx), values=(self.files[idx].path, status), tags=(status,))
+                elif kind == "progress":
+                    self.progress.configure(value=a)
+                elif kind == "log":
+                    self._log(b)
+                elif kind == "scan_done":
+                    out_dir, unresolved = a, b
+                    self._handle_scan_done(out_dir, unresolved)
+                elif kind == "done":
+                    ok, err = a, b
+                    self.is_running = False
+                    self.start_btn.configure(state="normal")
+                    self.status_label.configure(text="Tayyor")
+                    self._log(f"--- Jarayon tugadi: {ok} ta muvaffaqiyatli, {err} ta xato ---")
+                    tip = (
+                        "\n\nFaylni ochish uchun ustiga ikki marta bosing yoki "
+                        "\"Excelda ochish\" tugmasini bosing (agar oddiy ikki marta "
+                        "bosish Notepad'da ochsa, bu tugma majburan Excel bilan ochadi)."
+                        if ok else ""
+                    )
+                    if err:
+                        messagebox.showwarning(
+                            "Tugadi",
+                            f"{ok} ta fayl tayyor bo'ldi, {err} ta faylda xato yuz berdi.\nJurnalni tekshiring.{tip}",
+                        )
+                    else:
+                        messagebox.showinfo("Tugadi", f"Barcha {ok} ta fayl muvaffaqiyatli qayta ishlandi.{tip}")
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_queue)
+
+
+def _enable_dpi_awareness():
+    """Windows monitor masshtabi (125%, 150% va h.k.) turli bo'lganda yoki
+    oyna boshqa monitorga ko'chirilganda/kattalashtirilganda elementlar
+    joyidan siljib, ustma-ust tushib qolishining asosiy sababi — dastur
+    Windows'ga "men DPI-ga moslashaman" deb aytmagani. Shuni tuzatamiz;
+    muvaffaqiyatsiz bo'lsa (masalan eski Windows yoki boshqa OS) jim
+    tarzda o'tkazib yuboriladi — ilova baribir ishlayveradi."""
+    try:
+        windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        try:
+            windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _ensure_desktop_shortcut():
+    """Ish stolidagi yorliqni HAR SAFAR joriy .exe ga yo'naltiradi.
+
+    Faqat "yo'q bo'lsa yaratish" yetarli emas edi: eski nusxa o'chirilsa
+    yoki ilova boshqa papkaga ko'chirilsa, yorliq ishlamay qolardi yoki
+    eski faylni ochib, "menda eski versiya" degan chalkashlik berardi.
+    Xato chiqsa ilova ishlashda davom etadi (bu shunchaki qulaylik)."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        shortcut_path = os.path.join(desktop, "SoddaHisobot.lnk")
+        if not os.path.isdir(desktop):
+            return
+        target = os.path.abspath(sys.executable)
+        workdir = os.path.dirname(target)
+        ps_script = (
+            "$WshShell = New-Object -ComObject WScript.Shell; "
+            f'$Shortcut = $WshShell.CreateShortcut("{shortcut_path}"); '
+            f'$Shortcut.TargetPath = "{target}"; '
+            f'$Shortcut.WorkingDirectory = "{workdir}"; '
+            f'$Shortcut.IconLocation = "{target}"; '
+            "$Shortcut.Save()"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def main():
+    _enable_dpi_awareness()
+    os.chdir(APP_DIR)
+    _ensure_desktop_shortcut()
+    app = App()
+    app.mainloop()
