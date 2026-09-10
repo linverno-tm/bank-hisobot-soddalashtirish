@@ -46,7 +46,7 @@ import sv_ttk
 
 # Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
-CORE_VERSION = "2.0.2"
+CORE_VERSION = "2.1.0"
 
 # Kodni qaysi shoxobchadan olganini launcher.py exec() dan oldin shu
 # nom bilan uzatadi. To'g'ridan-to'g'ri `python core.py` bilan ishga
