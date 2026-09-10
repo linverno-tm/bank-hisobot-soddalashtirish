@@ -55,35 +55,6 @@ def resource_base_dir():
 APP_DIR = resource_base_dir()
 
 
-def enable_mousewheel(toplevel, canvas):
-    """Sichqoncha g'ildiragi bilan aylantirishni yoqadi.
-
-    tk.Canvas g'ildirak hodisasini O'ZI eshitmaydi — shuning uchun uni
-    qo'lda ulash kerak, aks holda faqat yon tarafdagi aylantirish
-    chizig'ini sichqoncha bilan tortish qoladi.
-
-    Bog'lash TOPLEVEL ga qilinadi, canvas'ga emas: Tk'da hodisa
-    widget -> klass -> toplevel -> "all" zanjiri bo'ylab tarqaladi,
-    shuning uchun sichqoncha ichki widget (yorliq, kiritish maydoni)
-    ustida turganda ham ishlaydi. Canvas'ning o'ziga bog'lansa, kursor
-    biror yorliq ustida bo'lsa g'ildirak ishlamay qolardi."""
-
-    def on_wheel(event):
-        # Windows'da event.delta 120 ning karrali (bir "tirqish" = 120).
-        canvas.yview_scroll(-int(event.delta / 120), "units")
-        return "break"
-
-    def on_linux_wheel(yonalish):
-        def handler(_event):
-            canvas.yview_scroll(yonalish, "units")
-            return "break"
-        return handler
-
-    toplevel.bind("<MouseWheel>", on_wheel)          # Windows / macOS
-    toplevel.bind("<Button-4>", on_linux_wheel(-1))  # X11: yuqoriga
-    toplevel.bind("<Button-5>", on_linux_wheel(1))   # X11: pastga
-
-
 class FileRow:
     def __init__(self, path):
         self.path = path
@@ -160,8 +131,6 @@ class UnresolvedDialog(tk.Toplevel):
         # before=... bilan footer paketlash tartibida kengayuvchi
         # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
         # kesilmaydi, o'rniga ro'yxat qisqaradi.
-        enable_mousewheel(self, canvas)
-
         footer = ttk.Frame(self, padding=10)
         footer.pack(side="bottom", fill="x", before=canvas)
         ttk.Button(footer, text="Saqlash va davom etish", command=self._on_confirm).pack(side="right")
@@ -268,8 +237,6 @@ class GroupsManagerDialog(tk.Toplevel):
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
-
-        enable_mousewheel(self, self.canvas)
 
         self._render_rows()
 
