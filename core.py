@@ -1150,6 +1150,53 @@ def ai_rules_paths():
             os.path.join(_data_dir(), _AI_RULES_FILE)]
 
 
+AI_CORRECTIONS_FILE = "ai_tuzatishlar.json"
+AI_CORRECTIONS_LIMIT = 40
+
+
+def _corrections_path():
+    return os.path.join(_data_dir(), AI_CORRECTIONS_FILE)
+
+
+def load_ai_corrections():
+    try:
+        with open(_corrections_path(), encoding="utf-8") as f:
+            yozuvlar = json.load(f)
+        return yozuvlar if isinstance(yozuvlar, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def record_ai_correction(nomi, matn, ai_taklifi, togri):
+    """Foydalanuvchi AI taklifini tuzatganini yozib qo'yadi.
+
+    Nima uchun: aynan shu kontragent keyingi safar lug'atdan tanilib
+    ketadi, ya'ni AI gacha yetib bormaydi. Lekin XATO TURI takrorlanadi —
+    masalan AI har safar IT firmasini tovar deb o'ylayveradi. Tuzatishlar
+    keyingi so'rovlarga misol bo'lib qo'shiladi va AI shu xatoni qayta
+    qilmaydi.
+
+    Faqat oxirgi bir nechtasi saqlanadi: so'rov cheksiz o'smasin."""
+    nomi = (nomi or "").strip()[:60]
+    if not nomi or not togri or ai_taklifi == togri:
+        return
+    yozuvlar = [
+        y for y in load_ai_corrections()
+        if y.get("nomi") != nomi
+    ]
+    yozuvlar.append({
+        "nomi": nomi,
+        "matn": (matn or "").strip()[:120],
+        "ai": ai_taklifi or "",
+        "togri": togri,
+    })
+    try:
+        with open(_corrections_path(), "w", encoding="utf-8") as f:
+            json.dump(yozuvlar[-AI_CORRECTIONS_LIMIT:], f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
 def ai_extra_rules():
     """Foydalanuvchi qo'lda yozgan ko'rsatmalar.
 
@@ -1229,6 +1276,22 @@ def _ai_prompt(items, groups):
         f"ta'riflardan USTUN turadi:\n{qollanma}\n"
         if qollanma else ""
     )
+
+    # Avval qilingan xatolar misol sifatida beriladi. Aynan o'sha
+    # kontragent keyingi safar lug'atdan tanilib ketadi, lekin xato TURI
+    # takrorlanadi — masalan IT firmasini har safar tovar deb o'ylash.
+    tuzatishlar = load_ai_corrections()
+    tuzatish_blok = ""
+    if tuzatishlar:
+        qatorlar = "\n".join(
+            f"- \"{t['nomi']}\" ({t['matn']}) -> to'g'risi: {t['togri']}"
+            + (f", sen xato qilib \"{t['ai']}\" degan eding" if t.get("ai") else "")
+            for t in tuzatishlar
+        )
+        tuzatish_blok = (
+            "\nAVVAL QILGAN XATOLARING — shunga o'xshash holatlarda "
+            f"takrorlama:\n{qatorlar}\n"
+        )
     return (
         "Sen O'zbekiston buxgalteriyasida bank ko'chirmalarini guruhlarga ajratasan.\n\n"
         f"MAVJUD GURUHLAR: {sorted(groups)}\n\n"
@@ -1239,7 +1302,7 @@ def _ai_prompt(items, groups):
         "- Tovar sotib olish (texnika, transport, aloqa vositasi, xo'jalik mollari) -> МЕБ\n"
         "- Ishonching past bo'lsa yoki mos guruh bo'lmasa \"?\" yoz. "
         "Noto'g'ri taxmindan ko'ra \"?\" yaxshiroq.\n"
-        f"{qollanma_blok}\n"
+        f"{qollanma_blok}{tuzatish_blok}\n"
         "Javobni JSON massiv sifatida qaytar:\n"
         '[{"id":0,"guruh":"...","ishonch":"yuqori|past","sabab":"qisqa izoh"}]\n\n'
         f"Qatorlar:\n{json.dumps(rows, ensure_ascii=False, indent=1)}"
@@ -1374,6 +1437,7 @@ class UnresolvedDialog(tk.Toplevel):
         self.result_entries = {}  # key -> (info, tk.StringVar)
         self._hint_labels = {}    # key -> AI taklifi ko'rsatiladigan yorliq
         self._row_order = []      # AI javobidagi indeks -> key moslashuvi
+        self._ai_taklif = {}      # key -> AI aytgan guruh (tuzatishni bilish uchun)
         self._wrap_labels = []    # oyna kengligiga qarab o'raladigan yozuvlar
         self._last_wrap = 0
         self.confirmed = False
@@ -1545,6 +1609,7 @@ class UnresolvedDialog(tk.Toplevel):
             if var.get().strip():
                 continue
             var.set(data["guruh"])
+            self._ai_taklif[key] = data["guruh"]
             belgi = "AI" if data.get("ishonch") == "yuqori" else "AI (ishonch past)"
             self._hint_labels[key].configure(text=f"{belgi} · {data.get('sabab', '')[:60]}")
             qollandi += 1
@@ -1563,6 +1628,18 @@ class UnresolvedDialog(tk.Toplevel):
             self._ai_status.configure(text=f"AI mos taklif topa olmadi.{qollanma}")
 
     def _on_confirm(self):
+        # AI taklifi tuzatilgan bo'lsa yozib qo'yamiz — keyingi so'rovlarda
+        # misol bo'lib beriladi va AI shu xatoni takrorlamaydi.
+        for key, (info, var) in self.result_entries.items():
+            # Ko'p maqsadli kontragentlar (G'aznachilik) tashlab
+            # yuboriladi: ularning guruhi har safar boshqacha, misol
+            # sifatida saqlash AI ni faqat adashtiradi.
+            if info.get("always_ask"):
+                continue
+            record_ai_correction(
+                info.get("name"), info.get("sample"),
+                self._ai_taklif.get(key, ""), var.get().strip(),
+            )
         self.confirmed = True
         self.destroy()
 
