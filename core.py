@@ -256,14 +256,61 @@ KNOWN_VENDOR_INN = dict(_BUILTIN_VENDOR_INN)
 
 def _base_dir():
     # When bundled by PyInstaller, __file__ points into a temp extraction
-    # folder, so use the actual .exe location instead to find/persist the
-    # dictionary next to the app (editable, grows over time).
+    # folder, so use the actual .exe location instead.
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
-_DICT_PATH = os.path.join(_base_dir(), "persist_dictionary.json")
+DICT_FILE = "persist_dictionary.json"
+
+
+def _data_dir():
+    """O'rganilgan guruhlar saqlanadigan papka.
+
+    .exe yonida EMAS: .exe boshqa papkaga ko'chirilsa yoki qaytadan
+    yuklab olinsa, yillar davomida to'plangan lug'at eski papkada qolib
+    ketardi va ilova hammasini unutgandek bo'lardi. %LOCALAPPDATA%
+    esa .exe qayerda turishidan qat'i nazar o'zgarmaydi — kesh,
+    kalit va branch.txt ham o'sha yerda."""
+    lokal = os.environ.get("LOCALAPPDATA")
+    if not lokal:
+        return _base_dir()
+    yol = os.path.join(lokal, "SoddaHisobot")
+    try:
+        os.makedirs(yol, exist_ok=True)
+    except OSError:
+        return _base_dir()
+    return yol
+
+
+_DICT_PATH = os.path.join(_data_dir(), DICT_FILE)
+
+
+def _migrate_dictionary():
+    """Eski joydagi (.exe yonidagi) lug'atni yangi joyga ko'chiradi.
+
+    Nusxalanadi, ko'chirilmaydi: eski fayl zaxira bo'lib joyida qoladi.
+    Yangi joyda lug'at paydo bo'lgach bu funksiya hech narsa qilmaydi,
+    ya'ni keyingi o'zgarishlar eski fayl bilan qayta yozilmaydi."""
+    if os.path.exists(_DICT_PATH):
+        return
+    eski = os.path.join(_base_dir(), DICT_FILE)
+    if os.path.abspath(eski) == os.path.abspath(_DICT_PATH):
+        return
+    try:
+        with open(eski, encoding="utf-8") as f:
+            mazmun = f.read()
+    except OSError:
+        return
+    try:
+        with open(_DICT_PATH, "w", encoding="utf-8") as f:
+            f.write(mazmun)
+    except OSError:
+        pass
+
+
+_migrate_dictionary()
 
 # Name-keyed learned mappings, for counterparties with no ИНН. Stored in the
 # same persist_dictionary.json file, namespaced with a "NAME::" key prefix so
@@ -742,8 +789,6 @@ if __name__ == "__main__":
 # ======================================================================
 # 2-QISM — HISOBOT YASASH
 # ======================================================================
-
-DICT_PATH = "persist_dictionary.json"
 
 # Yakuniy hisobotdagi yagona shrift (buyurtmachi so'roviga ko'ra)
 FONT_NAME = "Times New Roman"
