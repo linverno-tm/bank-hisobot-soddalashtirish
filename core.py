@@ -996,6 +996,152 @@ class FileRow:
         self.out_path = None
 
 
+# ------------------------------------------------------------ AI yordamchi
+# Nomlanmagan kontragent uchun guruh TAKLIF qiladi — hech qachon o'zi yozib
+# qo'ymaydi. Sabab: noto'g'ri kategoriya hisobotni jimgina buzadi va uni
+# keyin topish qiyin, shuning uchun oxirgi qaror foydalanuvchida qoladi.
+#
+# Ayniqsa "Сведения о работе счета" formatida kerak: unda ИНН ustuni yo'q,
+# ya'ni ИНН ga tayangan qoidalar umuman ishlamaydi va yirik summalar "?"
+# bo'lib qoladi. Bunday hisobotda yagona ishonchli belgi — to'lov maqsadi
+# matni, uni esa qoida bilan emas, ma'no bilan tushunish kerak.
+#
+# Tarmoq yo'q, kalit yo'q yoki javob buzuq bo'lsa — bo'sh natija qaytadi va
+# ilova avvalgidek (qo'lda kiritish bilan) ishlayveradi.
+AI_MODEL = "gemini-3-flash-preview"
+_AI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+_AI_KEY_FILE = "ai_key.txt"
+
+# Guruh nomlari qisqartma bo'lgani uchun AI ularni o'zicha tushunmaydi.
+# Sinov shuni ko'rsatdi: izohsiz "Шахрихон туман МИБ" (Majburiy Ijro
+# Byurosi) "МЕБ" (tovar) guruhiga qo'shib yuborilgan edi. Izohlar
+# qo'shilgach xato yo'qoldi — shuning uchun bu ro'yxat majburiy.
+AI_GROUP_HINTS = {
+    "МЕБ": "tovar/mahsulot sotib olish (maishiy texnika, telefon, mototsikl, jihoz, xo'jalik mollari)",
+    "Терминал": "HUMO / SmartVista terminal orqali tushum",
+    "ф пайми": "moliya-hamkor (BNPL, nasiya) bilan hisob-kitob — TBC Fin Service, TBC BNPL",
+    "ф вариант": "moliya-hamkor (BNPL, mikromoliya) — Variant Retail Finance, Uzum Nasiya",
+    "банк хизмати": "bank komissiyasi, hisoblangan foizlar",
+    "иш хаки ПК": "ish haqi, oylik to'lovi",
+    "солик даромад": "jismoniy shaxs daromad solig'i",
+    "солик КҚС": "qo'shilgan qiymat solig'i to'lovi",
+    "солик фойда": "foyda solig'i to'lovi",
+    "солик ижтимоий": "ijtimoiy soliq",
+    "солик пенсия": "pensiya jamg'armasiga badal",
+    "куриклаш": "qo'riqlash xizmati (IIB qoshidagi bo'lim)",
+    "коммунал": "suv, gaz uchun to'lov",
+    "электр": "elektr energiyasi uchun to'lov",
+    "ижара": "ijara to'lovi",
+    "хизмат": "xizmat ko'rsatish (IT, konsalting, dasturiy ta'minot, boshqa xizmatlar)",
+    "СОРЖ": "SORJ",
+}
+
+
+def ai_key_paths():
+    """Kalit qidiriladigan fayllar, tartib bilan.
+
+    Ikkinchi joy — sinov sozlamalari papkasi: branch.txt ham o'sha yerda
+    turadi, ya'ni sinov uchun kerak bo'lgan hamma narsa bitta joyda."""
+    yollar = [os.path.join(_base_dir(), _AI_KEY_FILE)]
+    lokal = os.environ.get("LOCALAPPDATA")
+    if lokal:
+        yollar.append(os.path.join(lokal, "SoddaHisobot", _AI_KEY_FILE))
+    return yollar
+
+
+def ai_key():
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    for yol in ai_key_paths():
+        try:
+            with open(yol, encoding="utf-8") as f:
+                key = f.read().strip()
+        except OSError:
+            continue
+        if key:
+            return key
+    return ""
+
+
+def _ai_prompt(items, groups):
+    hints = {g: AI_GROUP_HINTS[g] for g in groups if g in AI_GROUP_HINTS}
+    rows = [
+        {"id": i, "nomi": str(it.get("name") or "")[:60], "matn": str(it.get("sample") or "")[:200]}
+        for i, it in enumerate(items)
+    ]
+    return (
+        "Sen O'zbekiston buxgalteriyasida bank ko'chirmalarini guruhlarga ajratasan.\n\n"
+        f"MAVJUD GURUHLAR: {sorted(groups)}\n\n"
+        f"GURUHLAR NIMANI ANGLATADI:\n{json.dumps(hints, ensure_ascii=False, indent=1)}\n\n"
+        "QOIDALAR:\n"
+        "- Faqat yuqoridagi ro'yxatdan tanla, yangi nom o'ylab topma.\n"
+        "- O'xshash qisqartmalarni chalkashtirma: \"МИБ\" (Majburiy Ijro Byurosi) bu \"МЕБ\" EMAS.\n"
+        "- Tovar sotib olish (texnika, transport, aloqa vositasi, xo'jalik mollari) -> МЕБ\n"
+        "- Ishonching past bo'lsa yoki mos guruh bo'lmasa \"?\" yoz. "
+        "Noto'g'ri taxmindan ko'ra \"?\" yaxshiroq.\n\n"
+        "Javobni JSON massiv sifatida qaytar:\n"
+        '[{"id":0,"guruh":"...","ishonch":"yuqori|past","sabab":"qisqa izoh"}]\n\n'
+        f"Qatorlar:\n{json.dumps(rows, ensure_ascii=False, indent=1)}"
+    )
+
+
+def ai_suggest(items, groups, timeout=60):
+    """Har bir kontragent uchun guruh taklif qiladi.
+
+    items  — find_unresolved() qaytargan yozuvlar ro'yxati
+    groups — ruxsat etilgan guruh nomlari
+
+    Qaytaradi: {indeks: {"guruh", "ishonch", "sabab"}}. Xato yuz bersa —
+    bo'sh lug'at."""
+    key = ai_key()
+    if not key or not items or not groups:
+        return {}
+    try:
+        body = json.dumps({
+            "contents": [{"parts": [{"text": _ai_prompt(items, groups)}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            _AI_URL.format(model=AI_MODEL, key=key),
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        answers = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+    except Exception:
+        return {}
+
+    allowed = set(groups)
+    out = {}
+    for a in answers if isinstance(answers, list) else []:
+        try:
+            idx = int(a["id"])
+            guruh = str(a.get("guruh") or "").strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        # AI o'ylab topgan nomlarni qabul qilmaymiz — faqat mavjud guruhlar.
+        if guruh not in allowed:
+            continue
+        out[idx] = {
+            "guruh": guruh,
+            "ishonch": str(a.get("ishonch") or "").strip(),
+            "sabab": str(a.get("sabab") or "").strip(),
+        }
+    return out
+
+
+def ai_known_groups():
+    """AI tanlashi mumkin bo'lgan guruhlar — qoidalarda uchraydiganlarning
+    hammasi."""
+    return (
+        set(KNOWN_VENDOR_INN.values())
+        | {cat for _, cat in PURPOSE_FIRST_RULES}
+        | {cat for _, cat, _ in TEXT_RULES}
+    )
+
+
 class UnresolvedDialog(tk.Toplevel):
     """Modal oyna: hisobotlarda kategoriyasi aniqlanmagan (nomlanmagan)
     kontragentlar ro'yxatini ko'rsatadi va har biri uchun nom/kategoriya
@@ -1010,6 +1156,8 @@ class UnresolvedDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.result_entries = {}  # key -> (info, tk.StringVar)
+        self._hint_labels = {}    # key -> AI taklifi ko'rsatiladigan yorliq
+        self._row_order = []      # AI javobidagi indeks -> key moslashuvi
         self.confirmed = False
 
         header = ttk.Frame(self, padding=10)
@@ -1059,7 +1207,13 @@ class UnresolvedDialog(tk.Toplevel):
             ttk.Label(entry_row, text="Kategoriya nomi:").pack(side="left")
             var = tk.StringVar(value="")
             ttk.Entry(entry_row, textvariable=var, width=30).pack(side="left", padx=(6, 0))
+            # AI taklifi shu yerda ko'rinadi. Taklif faqat maslahat —
+            # yozilgan qiymatni istagancha o'zgartirish mumkin.
+            hint = ttk.Label(entry_row, text="", foreground="#0a66c2")
+            hint.pack(side="left", padx=(10, 0))
             self.result_entries[key] = (info, var)
+            self._hint_labels[key] = hint
+            self._row_order.append(key)
 
         # before=... bilan footer paketlash tartibida kengayuvchi
         # qismdan OLDIN turadi — shunda oyna kichraytirilganda tugmalar
@@ -1069,7 +1223,74 @@ class UnresolvedDialog(tk.Toplevel):
         ttk.Button(footer, text="Saqlash va davom etish", command=self._on_confirm).pack(side="right")
         ttk.Button(footer, text="Bekor qilish", command=self._on_cancel).pack(side="right", padx=(0, 8))
 
+        self._ai_status = ttk.Label(footer, text="", foreground="#666666")
+        self._ai_status.pack(side="left")
+        self._start_ai()
+
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    # -------------------------------------------------- AI takliflari
+    def _start_ai(self):
+        """Fon oqimida guruh takliflarini so'raydi. Bu faqat yordam —
+        javob kelmasa ham oyna avvalgidek ishlayveradi."""
+        if not self._row_order:
+            return
+        if not ai_key():
+            # Jim turmaymiz: aks holda "AI ishlayaptimi yo'qmi" degan
+            # savolga javob topib bo'lmaydi.
+            self._ai_status.configure(
+                text=f"AI o'chiq — {_AI_KEY_FILE} topilmadi ({ai_key_paths()[0]})"
+            )
+            return
+
+        self._ai_status.configure(text="AI takliflari so'ralmoqda...")
+        items = [self.result_entries[k][0] for k in self._row_order]
+        guruhlar = ai_known_groups()
+
+        # Javob navbat orqali qaytariladi, fon oqimidan to'g'ridan-to'g'ri
+        # widget'ga tegilmaydi: Tkinter faqat asosiy oqimdan chaqirilishi
+        # kerak, aks holda "main thread is not in main loop" xatosi chiqadi
+        # yoki interfeys tushunarsiz buziladi.
+        self._ai_queue = queue.Queue()
+        threading.Thread(
+            target=lambda: self._ai_queue.put(ai_suggest(items, guruhlar)),
+            daemon=True,
+        ).start()
+        self.after(150, self._poll_ai)
+
+    def _poll_ai(self):
+        if not self.winfo_exists():
+            return
+        try:
+            natija = self._ai_queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll_ai)
+            return
+        self._apply_ai(natija)
+
+    def _apply_ai(self, takliflar):
+        """Takliflarni maydonlarga yozadi. Foydalanuvchi allaqachon biror
+        narsa yozgan bo'lsa — tegilmaydi."""
+        if not self.winfo_exists():
+            return
+        qollandi = 0
+        for idx, data in takliflar.items():
+            if idx >= len(self._row_order):
+                continue
+            key = self._row_order[idx]
+            _info, var = self.result_entries[key]
+            if var.get().strip():
+                continue
+            var.set(data["guruh"])
+            belgi = "AI" if data.get("ishonch") == "yuqori" else "AI (ishonch past)"
+            self._hint_labels[key].configure(text=f"{belgi} · {data.get('sabab', '')[:60]}")
+            qollandi += 1
+        if qollandi:
+            self._ai_status.configure(
+                text=f"AI {qollandi} ta taklif berdi — tekshirib, kerak bo'lsa o'zgartiring."
+            )
+        else:
+            self._ai_status.configure(text="AI mos taklif topa olmadi.")
 
     def _on_confirm(self):
         self.confirmed = True
