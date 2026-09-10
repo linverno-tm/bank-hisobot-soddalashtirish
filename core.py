@@ -1512,6 +1512,7 @@ class App(tk.Tk):
         # yoki kulrang yo'l ko'rinib qolardi — fonni temaga tenglashtiramiz.
         self.configure(background="#fafafa")
         self._setup_fonts()
+        self._setup_styles()
 
         self.files = []  # list[FileRow]
         self.out_dir = tk.StringVar(value="")
@@ -1588,10 +1589,24 @@ class App(tk.Tk):
         base = tkfont.nametofont("TkDefaultFont")
         base.configure(family="Segoe UI", size=10)
         self.option_add("*Font", base)
-        self.heading_font = tkfont.Font(family="Segoe UI Semibold", size=17)
+        self.heading_font = tkfont.Font(family="Segoe UI Semibold", size=21)
         self.subtitle_font = tkfont.Font(family="Segoe UI", size=10)
         self.step_font = tkfont.Font(family="Segoe UI Semibold", size=11)
+        self.section_font = tkfont.Font(family="Segoe UI Semibold", size=10)
         self.mono_font = tkfont.Font(family="Consolas", size=9)
+
+    def _setup_styles(self):
+        """Mavzu ustidan bir nechta o'lcham tuzatishi.
+
+        sv_ttk almashtirilmaydi — faqat sarlavhalar ajralib tursin va
+        ro'yxat qatorlari zich bo'lmasin. Mayda, siqilgan interfeysda
+        ko'z qayerga qarashni bilmaydi; qatorlar orasidagi bo'sh joy
+        chiroylilikdan ko'ra o'qishga yordam beradi."""
+        style = ttk.Style()
+        style.configure("TLabelframe.Label", font=self.section_font, foreground="#5a5a5a")
+        style.configure("TLabelframe", borderwidth=1)
+        style.configure("Treeview", rowheight=28)
+        style.configure("Treeview.Heading", font=self.section_font)
 
     def _on_root_resize(self, event):
         # Tavsif matni oyna torayganda so'zma-so'z pastga tushib
@@ -1613,16 +1628,16 @@ class App(tk.Tk):
     def _step_frame(self, parent, title):
         """A labeled 'card' section used to break the workflow into clear,
         numbered steps so a non-technical user always knows what's next."""
-        frame = ttk.LabelFrame(parent, text=title, padding=14)
+        frame = ttk.LabelFrame(parent, text=title, padding=16)
         return frame
 
     def _build_ui(self):
-        pad = 14
+        pad = 18
         root = ttk.Frame(self, padding=pad)
         root.pack(fill="both", expand=True)
 
         header = ttk.Frame(root)
-        header.pack(fill="x", pady=(0, 14))
+        header.pack(fill="x", pady=(0, 6))
         title_row = ttk.Frame(header)
         title_row.pack(fill="x")
         title_row.columnconfigure(0, weight=1)
@@ -1641,8 +1656,12 @@ class App(tk.Tk):
         self.subtitle_label.pack(anchor="w")
         root.bind("<Configure>", self._on_root_resize)
 
+        # Sarlavhani ish maydonidan ajratib turadigan ingichka chiziq —
+        # qadamlar shu chiziqdan pastda boshlanadi.
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(12, 16))
+
         step1 = self._step_frame(root, "1-qadam · Fayllarni tanlang")
-        step1.pack(fill="x", pady=(0, 10))
+        step1.pack(fill="x", pady=(0, 14))
         row1 = ttk.Frame(step1)
         row1.pack(fill="x")
         ttk.Button(row1, text="📂 Fayllarni tanlash...", command=self.pick_files).pack(side="left")
@@ -1652,7 +1671,7 @@ class App(tk.Tk):
         self.count_label.pack(side="left", padx=(16, 0))
 
         step2 = self._step_frame(root, "2-qadam · Natijalarni qayerga saqlash")
-        step2.pack(fill="x", pady=(0, 10))
+        step2.pack(fill="x", pady=(0, 14))
         out_frame = ttk.Frame(step2)
         out_frame.pack(fill="x")
         self.out_entry = ttk.Entry(out_frame, textvariable=self.out_dir)
@@ -1664,7 +1683,7 @@ class App(tk.Tk):
         # egallaydi, shuning uchun oyna kichraytirilganda ular kesilib
         # qolmaydi — o'rniga yuqoridagi ro'yxat qisqaradi.
         log_frame = ttk.LabelFrame(root, text="Jurnal", padding=(10, 6))
-        log_frame.pack(side="bottom", fill="x", pady=(10, 0))
+        log_frame.pack(side="bottom", fill="x", pady=(14, 0))
         self.log = tk.Text(
             log_frame, height=4, wrap="word", state="disabled",
             font=self.mono_font, relief="flat", borderwidth=0,
@@ -1699,8 +1718,11 @@ class App(tk.Tk):
 
         columns = ("file", "status")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended", height=4)
-        self.tree.heading("file", text="Fayl")
-        self.tree.heading("status", text="Holati")
+        # Ustun sarlavhasi tagidagi matn bilan bir chiziqda tursin —
+        # standart holatda sarlavha markazda, matn chapda bo'lib,
+        # ro'yxat qiyshiq ko'rinardi.
+        self.tree.heading("file", text="Fayl", anchor="w")
+        self.tree.heading("status", text="Holati", anchor="w")
         self.tree.column("file", width=600, anchor="w", stretch=True)
         self.tree.column("status", width=160, anchor="w", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
