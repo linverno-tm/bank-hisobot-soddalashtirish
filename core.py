@@ -1503,7 +1503,15 @@ class App(tk.Tk):
             return
         if state != self._last_state:
             self._last_state = state
-            self.after(50, self._force_full_redraw)
+            # Darhol chizamiz. Avval bu 50 ms kechikib bajarilardi va aynan
+            # o'sha kechikish ko'zga "qora yamoq" bo'lib tashlanardi: oyna
+            # kattayib bo'lgan, lekin widget'lar hali chizilmagan bo'lardi.
+            self._force_full_redraw()
+            # DWM oynani bir necha kadr davomida cho'zib ko'rsatadi, shuning
+            # uchun keyingi bo'sh lahzada yana bir marta chizamiz — birinchi
+            # chizish animatsiya tugashidan oldin bo'lib qolsa ham yamoq
+            # qolib ketmasin.
+            self.after_idle(self._force_full_redraw)
 
     def _force_full_redraw(self):
         # update_idletasks butun ilovadagi kutayotgan chizish ishlarini
