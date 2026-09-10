@@ -38,12 +38,11 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # Launcher faqat standart kutubxonani import qiladi, core.py esa
-      # exec() ichida bajariladi — PyInstaller uning import'larini
-      # ko'rmaydi. Shuning uchun core.py ning har bir bog'liqligi shu
-      # yerda qo'lda ko'rsatilgan, aks holda .exe da ModuleNotFoundError
-      # chiqadi. core.py ga yangi kutubxona qo'shilsa, shu ro'yxatga ham
-      # qo'shib, .exe ni qayta yig'ish kerak.
+      # core.py ning bog'liqliklari launcher.py dagi
+      # _pyinstaller_bogliqliklari() da sanab o'tilgan — PyInstaller
+      # shu yerdan ko'radi. --collect-all esa modul fayllarini emas,
+      # ular yonidagi ma'lumot fayllarini oladi (sv_ttk ning .tcl
+      # mavzulari shusiz kelmaydi). --add-data — offline zaxira nusxa.
       - name: .exe yasash (PyInstaller)
         run: >
           pyinstaller --onefile --windowed
@@ -51,11 +50,6 @@ jobs:
           --add-data "core.py;."
           --collect-all openpyxl
           --collect-all sv_ttk
-          --hidden-import tkinter
-          --hidden-import tkinter.ttk
-          --hidden-import tkinter.font
-          --hidden-import tkinter.filedialog
-          --hidden-import tkinter.messagebox
           launcher.py
 
       - name: Paketlash (exe + O'QING.txt + bo'sh dictionary)

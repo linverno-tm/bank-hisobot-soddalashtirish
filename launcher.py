@@ -137,6 +137,46 @@ def _show_error(matn):
         pass
 
 
+def _pyinstaller_bogliqliklari():
+    """HECH QACHON CHAQIRILMAYDI — faqat PyInstaller uchun.
+
+    core.py exec() ichida bajariladi, shuning uchun PyInstaller uning
+    import'larini ko'ra olmaydi va ularni .exe ga qo'shmaydi. Natijada
+    ilova foydalanuvchida "No module named ..." bilan yiqiladi. Bu
+    ro'yxat esa oddiy import bo'lgani uchun PyInstaller uni ko'radi.
+
+    Diqqat: standart kutubxona ham kerak (json, re, decimal...) — .exe ga
+    butun Python emas, faqat ko'ringan modullar tushadi.
+
+    core.py ga YANGI import qo'shilsa, shu yerga ham qo'shib, .exe ni
+    qayta yig'ish kerak. Aks holda yangi kod GitHub'dan tushadi-yu,
+    eski .exe da ishlamaydi."""
+    import collections  # noqa: F401
+    import copy  # noqa: F401
+    import datetime  # noqa: F401
+    import decimal  # noqa: F401
+    import json  # noqa: F401
+    import platform  # noqa: F401
+    import queue  # noqa: F401
+    import re  # noqa: F401
+    import subprocess  # noqa: F401
+    import threading  # noqa: F401
+    import traceback  # noqa: F401
+    import winreg  # noqa: F401
+
+    import openpyxl  # noqa: F401
+    import openpyxl.cell.cell  # noqa: F401
+    import openpyxl.styles  # noqa: F401
+    import openpyxl.utils  # noqa: F401
+    import sv_ttk  # noqa: F401
+
+    import tkinter  # noqa: F401
+    import tkinter.filedialog  # noqa: F401
+    import tkinter.font  # noqa: F401
+    import tkinter.messagebox  # noqa: F401
+    import tkinter.ttk  # noqa: F401
+
+
 def main():
     # 1) Internetdan eng yangi nusxa
     yangi = None
