@@ -615,25 +615,35 @@ def propose_category_for_group(op_values, names, texts, inns, accounts=None):
 #      ko'rinishida ("1 170 682,76")
 #   C) "Sheet1": Дата проводки | Номер документа | МФО корресп. | Счет
 #      корреспондента | Наименование корресп. | ИНН | Детали | Дебет | Кредит
+#   D) "Справка о работе счета": ustunlar IKKI TOMONGA bo'lingan — mijoz
+#      (bizning hisobimiz) va korrespondent (kontragent). Bizga faqat
+#      korrespondent kerak, shuning uchun "ИНН клиента" kabi nomlar
+#      ataylab ro'yxatga kiritilmagan: ular hech qanday maydonga
+#      tushmaydi va e'tiborsiz qoladi.
 # Shu tarzda kelajakda yana bir variant chiqsa ham kod ishlayveradi.
 _COLUMN_ALIASES = {
     "date": ("дата проводки", "дата"),
     "account": ("счет корреспондента", "счет корресп.", "счет"),
-    "inn": ("инн",),
-    "name": ("наименование корресп.", "наименование корресп", "наименование"),
+    "inn": ("инн корреспондента", "инн"),
+    "name": ("наименование корреспондента", "наименование корресп.",
+             "наименование корресп", "наименование"),
     "doc_no": ("№ док-та", "номер документа", "№ док"),
-    "op": ("оп",),
-    "mfo": ("мфо корресп.", "мфо корресп", "мфо"),
-    "debit": ("оборот дебет", "дебет"),
-    "credit": ("оборот кредит", "кредит"),
+    "op": ("во", "оп"),
+    "mfo": ("мфо корреспондента", "мфо корресп.", "мфо корресп", "мфо"),
+    "debit": ("сумма дебета", "оборот дебет", "дебет"),
+    "credit": ("сумма кредита", "оборот кредит", "кредит"),
     "purpose": ("назначение платежа", "детали"),
 }
 
 
 def _norm_header(value):
     """Sarlavha matnini solishtirishga tayyorlaydi: kichik harf, yangi
-    qator va ortiqcha bo'shliqlar bitta bo'shliqqa aylanadi."""
-    return " ".join(str(value or "").split()).strip().lower()
+    qator va ortiqcha bo'shliqlar bitta bo'shliqqa aylanadi.
+
+    "ё" harfi "е" ga aylantiriladi: bir bank "Счет", boshqasi "Счёт" deb
+    yozadi va ular boshqa-boshqa belgi — busiz ustun umuman
+    tanilmay qolardi."""
+    return " ".join(str(value or "").split()).strip().lower().replace("ё", "е")
 
 
 def _detect_header(ws, max_scan=30):
@@ -750,7 +760,14 @@ def load_raw_rows(path, sheet_name=None):
             "mfo": get(vals, "mfo"),
             "debit": _parse_amount(get(vals, "debit")),
             "credit": _parse_amount(get(vals, "credit")),
-            "purpose": get(vals, "purpose") or "",
+            # To'lov izohidagi yangi qator belgilari bo'shliqqa
+            # aylantiriladi. "Справка о работе счета" formatida matn
+            # katak ichida bir necha qatorga bo'lingan holda keladi va
+            # "Возмещение клиенту по покупкам" va "ТСП" so'zlari
+            # orasiga qator uzilishi tushib qolgani uchun Терминал
+            # qoidasi mos kelmay qolardi — yirik summalar "?" ga
+            # tushib ketardi.
+            "purpose": " ".join((get(vals, "purpose") or "").split()),
         })
     return wb, ws, {"header_row": header_row, "cols": cols}, rows
 

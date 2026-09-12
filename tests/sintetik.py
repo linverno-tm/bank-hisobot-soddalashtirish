@@ -16,6 +16,7 @@ Xato bo'lsa 1 qaytaradi, ya'ni CI qizil bo'ladi.
 import os
 import sys
 import tempfile
+from decimal import Decimal
 
 LOYIHA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, LOYIHA)
@@ -77,6 +78,111 @@ def namuna_yasash(yol):
     wb.save(yol)
 
 
+# "Справка о работе счета" (D formati) uchun alohida namuna. Bu formatda
+# ustunlar ikki tomonga bo'lingan — mijoz (bizning hisobimiz) va
+# korrespondent (kontragent) — va ma'lumot 1-emas, 2-ustundan boshlanadi.
+# Ikkita tuzoq bor, ikkalasi ham shu yerda tekshiriladi:
+#   1) sarlavhalarda "ё" ishlatiladi ("Счёт корреспондента")
+#   2) to'lov izohi katak ichida bir necha qatorga bo'lingan holda keladi
+NL = chr(10)  # izoh ichidagi qator uzilishi (heredoc bilan yozib bo'lmaydi)
+D_QATORLAR = [
+    # (korrespondent nomi, ИНН, hisob, debet, kredit, izoh, kutilgan guruh)
+    ("TEST TERMINAL", "300000001", "23510000300961686800", 0, 1000000,
+     "0063400634 Возмещение клиенту по покупкам" + NL + "ТСП договор humo", "Терминал"),
+    ("TEST QURIQLASH", "200237592", "20208000100000000002", 150000, 0,
+     "куриклаш хизмати учун" + NL + "тулов", "куриклаш"),
+    ("TEST IJTIMOIY", "300000003", "23402000300100001010", 250000, 0,
+     "ижтимоий солик" + NL + "учун тулов", "солик ижтимоий"),
+]
+
+
+def namuna_d_yasash(yol):
+    """D formatidagi namuna. Mijoz ustunlari ataylab boshqa qiymat bilan
+    to'ldiriladi: kod kontragentni emas, bizning firmani o'qib qo'ysa,
+    sinov darhol yiqiladi."""
+    import datetime
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Справка о работе счета"
+
+    ws.cell(2, 2, "00083 / SINOV FILIALI")
+    ws.cell(3, 2, "История по счёту: 20218000900961686001")
+    ws.cell(4, 2, "SINOV TASHKILOTI")
+    ws.cell(5, 2, "Справка о работе счёта ЗА 01.09.2026 - 30.09.2026")
+
+    debet = sum(q[3] for q in D_QATORLAR)
+    kredit = sum(q[4] for q in D_QATORLAR)
+    ws.cell(6, 2, "Остаток на начало периода Пассив")
+    ws.cell(6, 6, 1000)
+
+    sarlavhalar = {
+        2: "№", 3: "№ Док-та", 4: "ВО", 5: "Дата",
+        6: "Наименование клиента", 7: "ИНН клиента",
+        8: "Счёт клиента", 9: "МФО клиента",
+        10: "Сумма дебета", 11: "Сумма кредита",
+        12: "Наименование корреспондента", 13: "ИНН корреспондента",
+        14: "Счёт корреспондента", 15: "МФО корреспондента",
+        16: "Назначение платежа",
+    }
+    for c, nom in sarlavhalar.items():
+        ws.cell(7, c, nom)
+
+    for n, (nomi, inn, hisob, deb, kred, izoh, _kut) in enumerate(D_QATORLAR):
+        r = 8 + n
+        ws.cell(r, 2, n + 1)
+        ws.cell(r, 3, f"000004{n}")
+        ws.cell(r, 4, "06")
+        ws.cell(r, 5, datetime.datetime(2026, 9, 7 + n))
+        ws.cell(r, 6, "BIZNING FIRMA")          # mijoz — o'qilmasligi kerak
+        ws.cell(r, 7, "599656770")              # mijoz ИНН — o'qilmasligi kerak
+        ws.cell(r, 8, "20218000900961686001")   # mijoz hisobi — o'qilmasligi kerak
+        ws.cell(r, 9, "00083")
+        ws.cell(r, 10, float(deb))
+        ws.cell(r, 11, float(kred))
+        ws.cell(r, 12, nomi)
+        ws.cell(r, 13, inn)
+        ws.cell(r, 14, hisob)
+        ws.cell(r, 15, "01158")
+        ws.cell(r, 16, izoh)
+
+    oxir = 8 + len(D_QATORLAR)
+    ws.cell(oxir, 2, "Остаток на конец периода Пассив")
+    ws.cell(oxir, 6, 1000 + kredit - debet)
+    wb.save(yol)
+
+
+def d_formatini_tekshir(core, ish):
+    """D formati o'qiladimi, kontragent ustunlari to'g'ri tanlanadimi."""
+    xatolar = []
+    xom = os.path.join(ish, "sinov_d.xlsx")
+    namuna_d_yasash(xom)
+
+    wb, ws, layout, rows = core.load_raw_rows(xom)
+    if len(rows) != len(D_QATORLAR):
+        xatolar.append(f"D formati: {len(rows)} qator o'qildi, {len(D_QATORLAR)} kutilgan")
+        return xatolar
+
+    for r, (nomi, inn, hisob, _d, _k, _izoh, kutilgan) in zip(rows, D_QATORLAR):
+        # Mijoz emas, korrespondent ustunlari olinganini tekshiramiz.
+        if r["name"] != nomi:
+            xatolar.append(f"D formati: nom '{r['name']}' o'qildi, '{nomi}' kutilgan")
+        if str(r["inn"]) != inn:
+            xatolar.append(f"D formati: ИНН '{r['inn']}' o'qildi, '{inn}' kutilgan")
+        if str(r["account"]) != hisob:
+            xatolar.append(f"D formati: hisob '{r['account']}' o'qildi, '{hisob}' kutilgan")
+        guruh, _ = core.classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        if guruh != kutilgan:
+            xatolar.append(f"D formati: {nomi} -> '{guruh}', '{kutilgan}' kutilgan edi")
+
+    natija = os.path.join(ish, "natija_d.xlsx")
+    info = core.build_simplified_report(xom, natija)
+    if info.get("balans_farqi") != Decimal(0):
+        xatolar.append(f"D formati: balans farqi {info.get('balans_farqi')}")
+    return xatolar
+
+
 def main():
     import core
 
@@ -102,7 +208,6 @@ def main():
     info = core.build_simplified_report(xom, natija)
 
     import openpyxl
-    from decimal import Decimal
 
     lst = openpyxl.load_workbook(natija, data_only=True)["Лист1"]
     kategoriya_debet = Decimal("0")
@@ -135,6 +240,8 @@ def main():
     # 3) Balans nazorati: bank ko'rsatgan qoldiqlar bilan aylanma mos kelsin
     if info.get("balans_farqi") != Decimal(0):
         xatolar.append(f"balans nazorati: farq {info.get('balans_farqi')}, 0 kutilgan edi")
+
+    xatolar += d_formatini_tekshir(core, ish)
 
     if xatolar:
         print("XATO:")
