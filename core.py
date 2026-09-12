@@ -25,6 +25,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.request
@@ -46,7 +47,7 @@ import sv_ttk
 
 # Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
-CORE_VERSION = "2.2.1"
+CORE_VERSION = "2.2.2"
 
 # Kodni qaysi shoxobchadan olganini launcher.py exec() dan oldin shu
 # nom bilan uzatadi. To'g'ridan-to'g'ri `python core.py` bilan ishga
@@ -798,13 +799,66 @@ def _split_account_cell(value):
     return parts[0], " ".join(parts[1:])
 
 
+_XLS_CONVERT_PS = (
+    "$e = New-Object -ComObject Excel.Application; "
+    "$e.Visible = $false; $e.DisplayAlerts = $false; "
+    "$wb = $e.Workbooks.Open('{kirish}'); "
+    "$wb.SaveAs('{chiqish}', 51); "
+    "$wb.Close($false); $e.Quit(); "
+    "[System.Runtime.InteropServices.Marshal]::ReleaseComObject($e) | Out-Null"
+)
+
+
+def ensure_xlsx(path):
+    """Eski .xls fayl bo'lsa, uni vaqtinchalik .xlsx ga o'giradi.
+
+    openpyxl faqat .xlsx ni o'qiydi, bank esa ba'zan eski .xls beradi va
+    ilova "does not support the old .xls file format" deb to'xtab qolardi.
+
+    O'girish Excel'ning o'zi orqali qilinadi: ilovaga yangi kutubxona
+    qo'shilsa, uni .exe ichiga kiritish va .exe ni hamma foydalanuvchiga
+    qaytadan tarqatish kerak bo'lardi. Excel esa bu kompyuterlarda
+    allaqachon bor — hisobot baribir unda ochiladi.
+
+    Qaytaradi: o'qish uchun yo'l. .xlsx bo'lsa — o'zgarishsiz."""
+    if not path.lower().endswith(".xls"):
+        return path
+
+    ish = tempfile.mkdtemp(prefix="soddahisobot_")
+    chiqish = os.path.join(ish, os.path.basename(path)[:-4] + ".xlsx")
+    buyruq = _XLS_CONVERT_PS.format(
+        kirish=os.path.abspath(path).replace("'", "''"),
+        chiqish=chiqish.replace("'", "''"),
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", buyruq],
+            check=True, timeout=120,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as e:
+        raise ValueError(
+            "Eski .xls formatidagi faylni o'girib bo'lmadi. Faylni Excel'da "
+            "ochib, \"Сохранить как\" orqali .xlsx sifatida saqlang va qaytadan "
+            f"tanlang. ({type(e).__name__})"
+        ) from e
+
+    if not os.path.exists(chiqish):
+        raise ValueError(
+            "Eski .xls fayl .xlsx ga o'girilmadi. Faylni Excel'da ochib, "
+            ".xlsx sifatida saqlang va qaytadan tanlang."
+        )
+    return chiqish
+
+
 def load_raw_rows(path, sheet_name=None):
     """Xom hisobotni o'qiydi. Qaytaradi: (wb, ws, layout, rows), bunda
     `layout` — {"header_row": int, "cols": {maydon: ustun indeksi}}.
     Chaqiruvchi hisobotga yozishda `layout["cols"]["account"]` dan
     foydalanishi kerak, chunki hisob raqam ustuni har formatda har xil
     joyda turadi."""
-    wb = openpyxl.load_workbook(path, data_only=True)
+    wb = openpyxl.load_workbook(ensure_xlsx(path), data_only=True)
     ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
 
     header_row, cols = _detect_header(ws)
@@ -2196,7 +2250,7 @@ class GroupsManagerDialog(tk.Toplevel):
     def _pick_from_excel(self):
         path = filedialog.askopenfilename(
             title="Hisobot faylini tanlang",
-            filetypes=[("Excel fayllar", "*.xlsx"), ("Barcha fayllar", "*.*")],
+            filetypes=[("Excel fayllar", "*.xlsx *.xls"), ("Barcha fayllar", "*.*")],
         )
         if not path:
             return

@@ -352,6 +352,56 @@ def oynalarni_tekshir(core):
     return xatolar
 
 
+def xls_ni_tekshir(core, ish):
+    """Eski .xls fayl o'qiladimi.
+
+    O'girish Excel orqali bo'lgani uchun GitHub runner'da bu qism
+    o'tkazib yuboriladi — u yerda Excel yo'q. Mahalliy kompyuterda esa
+    to'liq tekshiriladi: .xls dan chiqqan raqamlar .xlsx dan chiqqani
+    bilan bir xil bo'lishi shart."""
+    xatolar = []
+    xlsx = os.path.join(ish, "sinov.xlsx")
+
+    # .xlsx yo'li tegilmasligi kerak — bu Excel'siz ham tekshiriladi.
+    if core.ensure_xlsx(xlsx) != xlsx:
+        xatolar.append(".xlsx yo'li o'zgartirildi, o'zgarishsiz qolishi kerak edi")
+
+    xls = os.path.join(ish, "sinov_eski.xls")
+    try:
+        import subprocess
+        buyruq = (
+            "$e = New-Object -ComObject Excel.Application; $e.Visible = $false; "
+            "$e.DisplayAlerts = $false; "
+            f"$wb = $e.Workbooks.Open('{xlsx}'); $wb.SaveAs('{xls}', 56); "
+            "$wb.Close($false); $e.Quit()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", buyruq],
+                       check=True, timeout=120,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        print("   (.xls sinovi o'tkazib yuborildi — Excel topilmadi)")
+        return xatolar
+
+    if not os.path.exists(xls):
+        print("   (.xls sinovi o'tkazib yuborildi — namuna yasalmadi)")
+        return xatolar
+
+    try:
+        eski = core.build_simplified_report(xls, os.path.join(ish, "xls_natija.xlsx"))
+        yangi = core.build_simplified_report(xlsx, os.path.join(ish, "xlsx_natija.xlsx"))
+    except Exception as e:
+        xatolar.append(f".xls o'qilmadi: {type(e).__name__}: {e}")
+        return xatolar
+
+    if eski["total_debet"] != yangi["total_debet"] or eski["total_kredit"] != yangi["total_kredit"]:
+        xatolar.append(
+            f".xls va .xlsx natijalari farq qildi: "
+            f"{eski['total_debet']}/{eski['total_kredit']} != "
+            f"{yangi['total_debet']}/{yangi['total_kredit']}"
+        )
+    return xatolar
+
+
 def main():
     import core
 
@@ -416,6 +466,7 @@ def main():
     xatolar += rejimlarni_tekshir(core, ish)
     xatolar += yonalishni_tekshir(core)
     xatolar += oynalarni_tekshir(core)
+    xatolar += xls_ni_tekshir(core, ish)
 
     if xatolar:
         print("XATO:")
@@ -423,7 +474,7 @@ def main():
             print("  -", x)
         return 1
 
-    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar + yo'nalish + oynalar, "
+    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar + yo'nalish + oynalar + xls, "
           f"jami {jami_qator[0]} debet / {jami_qator[1]} kredit")
     return 0
 
