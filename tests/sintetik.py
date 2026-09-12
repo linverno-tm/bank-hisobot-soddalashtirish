@@ -204,6 +204,56 @@ def d_formatini_tekshir(core, ish, til="ru"):
     return xatolar
 
 
+def rejimlarni_tekshir(core, ish):
+    """Har bir foydalanuvchi o'z atamalarida ishlay oladimi.
+
+    Ikki imkoniyat tekshiriladi:
+      - nom xaritasi: qoidalar ishlaydi, faqat chiqadigan nom almashadi
+      - "faqat o'zim" rejimi: tayyor qoidalar umuman qo'llanmaydi
+
+    Sinov haqiqiy sozlamalar faylini o'zgartiradi, shuning uchun oxirida
+    avvalgi holat albatta tiklanadi."""
+    import openpyxl
+
+    xatolar = []
+    xom = os.path.join(ish, "sinov.xlsx")  # A/B formatidagi namuna
+
+    def guruhlar():
+        out = os.path.join(ish, "rejim.xlsx")
+        core.build_simplified_report(xom, out)
+        lst = openpyxl.load_workbook(out, data_only=True)["Лист1"]
+        return {str(lst.cell(r, 2).value) for r in range(4, lst.max_row + 1)
+                if lst.cell(r, 2).value is not None} - {"Общий итог"}
+
+    eski_rejim = core.scratch_mode()
+    eski_nomlar = core.load_name_map()
+    try:
+        core.set_scratch_mode(False)
+        core.save_name_map({})
+        odatiy = guruhlar()
+        if "Терминал" not in odatiy:
+            xatolar.append(f"odatiy holatda Терминал yo'q: {sorted(odatiy)}")
+
+        # 1) Nom xaritasi
+        core.save_name_map({"Терминал": "tushum"})
+        xarita_bilan = guruhlar()
+        if "tushum" not in xarita_bilan or "Терминал" in xarita_bilan:
+            xatolar.append(f"nom xaritasi qo'llanmadi: {sorted(xarita_bilan)}")
+
+        # 2) "Faqat o'zim" rejimi — namunada foydalanuvchi yozuvi yo'q,
+        #    demak hamma qator "?" bo'lishi kerak.
+        core.save_name_map({})
+        core.set_scratch_mode(True)
+        noldan = guruhlar()
+        if noldan != {"?"}:
+            xatolar.append(f"faqat o'zim rejimida ortiqcha guruh qoldi: {sorted(noldan)}")
+    finally:
+        core.set_scratch_mode(eski_rejim)
+        core.save_name_map(eski_nomlar)
+
+    return xatolar
+
+
 def main():
     import core
 
@@ -265,13 +315,15 @@ def main():
     for til in ("ru", "uz"):
         xatolar += d_formatini_tekshir(core, ish, til)
 
+    xatolar += rejimlarni_tekshir(core, ish)
+
     if xatolar:
         print("XATO:")
         for x in xatolar:
             print("  -", x)
         return 1
 
-    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz), "
+    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar, "
           f"jami {jami_qator[0]} debet / {jami_qator[1]} kredit")
     return 0
 

@@ -346,6 +346,8 @@ _migrate_dictionary()
 # same persist_dictionary.json file, namespaced with a "NAME::" key prefix so
 # it never collides with the (purely numeric) ИНН keys.
 KNOWN_VENDOR_NAME = {}
+# Foydalanuvchi o'zi kiritgan ИНН/hisob kalitlari (kodga yozilganlar emas).
+LEARNED_VENDOR_KEYS = set()
 _NAME_KEY_PREFIX = "NAME::"
 # Foydalanuvchi o'zi qo'shgan "to'lov maqsadi matni -> guruh" qoidalari.
 # Bitta hisob raqam orqali turli maqsaddagi to'lovlar o'tganda, ilovada
@@ -397,6 +399,9 @@ def _load_persist_dict():
             KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
         else:
             KNOWN_VENDOR_INN[k] = v
+            # Kodga yozilganlardan ajratib qo'yamiz: "noldan boshlash"
+            # rejimida faqat foydalanuvchi o'zi kiritganlari ishlaydi.
+            LEARNED_VENDOR_KEYS.add(k)
 
 
 _migrate_legacy_groups()
@@ -539,7 +544,12 @@ def classify_row(op, name, text, inn, account=None):
     name = name or ""
     text = text or ""
 
-    if re.search(r"начисленные\s*%%", name, re.I):
+    # "Faqat o'zim" rejimida kodga yozilgan qoidalar chetlab o'tiladi:
+    # ular bir kishining atamalariga moslangan. Foydalanuvchining o'zi
+    # kiritgan yozuvlari esa ishlayveradi.
+    faqat_ozim = scratch_mode()
+
+    if not faqat_ozim and re.search(r"начисленные\s*%%", name, re.I):
         return "банк хизмати", "high"
 
     account_str = str(account).strip() if account else ""
@@ -550,9 +560,10 @@ def classify_row(op, name, text, inn, account=None):
     if sess:
         return sess, "high"
 
-    for rx, cat in PURPOSE_FIRST_RULES:
-        if rx.search(text):
-            return cat, "high"
+    if not faqat_ozim:
+        for rx, cat in PURPOSE_FIRST_RULES:
+            if rx.search(text):
+                return cat, "high"
 
     # Foydalanuvchi o'zi qo'shgan matn qoidalari — hisob raqamdan ustun
     # turadi, chunki ular aynan shunday "bitta hisob raqam, ko'p maqsad"
@@ -571,21 +582,24 @@ def classify_row(op, name, text, inn, account=None):
 
     account = account_str
     inn = str(inn).strip() if inn else ""
-    if account and account in KNOWN_VENDOR_INN:
-        return KNOWN_VENDOR_INN[account], "high"
-    if inn and inn in KNOWN_VENDOR_INN:
-        return KNOWN_VENDOR_INN[inn], "high"
+    for kalit in (account, inn):
+        if not kalit or kalit not in KNOWN_VENDOR_INN:
+            continue
+        if faqat_ozim and kalit not in LEARNED_VENDOR_KEYS:
+            continue  # kodga yozilgan kontragent — bu rejimda hisobga olinmaydi
+        return KNOWN_VENDOR_INN[kalit], "high"
 
     name_key = name.strip()
     if name_key in KNOWN_VENDOR_NAME:
         return KNOWN_VENDOR_NAME[name_key], "high"
 
-    for rx, cat, conf in TEXT_RULES:
-        if rx.search(text) or rx.search(name):
-            return cat, conf
+    if not faqat_ozim:
+        for rx, cat, conf in TEXT_RULES:
+            if rx.search(text) or rx.search(name):
+                return cat, conf
 
-    if op == 1 and GOODS_PURCHASE_HINT.search(text):
-        return "МЕБ", "guess"
+        if op == 1 and GOODS_PURCHASE_HINT.search(text):
+            return "МЕБ", "guess"
 
     return "?", "review"
 
@@ -944,9 +958,15 @@ def build_simplified_report(src_path, out_path):
     # gets extra attention (still applied per-row, never silently collapsed).
     by_account = defaultdict(set)
 
+    # Guruh nomi shu foydalanuvchidagi atamaga almashtiriladi. Bitta
+    # joyda qilinadi, shunda xom varaqdagi ustun ham, Лист1 ham, jami
+    # ham bir xil nomni ko'radi.
+    nomlar = load_name_map()
+
     results = []  # (row_dict, category, confidence)
     for r in rows:
         cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        cat = nomlar.get(cat, cat)
         results.append((r, cat, conf))
         by_account[r["account"]].add(cat)
 
@@ -1209,6 +1229,62 @@ def set_setting(nom, qiymat):
     try:
         with open(_settings_path(), "w", encoding="utf-8") as f:
             json.dump(sozlamalar, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+SCRATCH_KEY = "faqat_ozim"
+NAMES_FILE = "nomlar.json"
+
+
+_SCRATCH_CACHE = None
+
+
+def set_scratch_mode(yoqilgan):
+    global _SCRATCH_CACHE
+    set_setting(SCRATCH_KEY, bool(yoqilgan))
+    _SCRATCH_CACHE = bool(yoqilgan)
+
+
+def scratch_mode():
+    """"Faqat o'zim kiritgan guruhlar" rejimi.
+
+    Kodga yozilgan qoidalar va kontragentlar bir kishining ish uslubiga
+    moslangan. Boshqa foydalanuvchi butunlay boshqa nomlar bilan
+    ishlashi mumkin — bu rejimda tayyor qoidalar umuman qo'llanmaydi,
+    har bir kontragent "?" bo'lib so'raladi va u o'z ro'yxatini noldan
+    tuzadi. Standart holatda o'chiq: mavjud foydalanuvchilarning ishi
+    o'zgarmasin."""
+    # Har qator uchun fayldan o'qimaymiz: classify_row minglab marta
+    # chaqiriladi. O'zgartirish set_scratch_mode() orqali ketadi.
+    global _SCRATCH_CACHE
+    if _SCRATCH_CACHE is None:
+        _SCRATCH_CACHE = bool(get_setting(SCRATCH_KEY, False))
+    return _SCRATCH_CACHE
+
+
+def _names_path():
+    return os.path.join(_data_dir(), NAMES_FILE)
+
+
+def load_name_map():
+    """Guruhlarning shu foydalanuvchidagi nomi: {"МЕБ": "tovar"}.
+
+    Qoidalar avvalgidek ishlaydi, faqat hisobotga yoziladigan nom
+    almashadi — ya'ni tayyor mantiqni yo'qotmasdan o'z atamalaringizni
+    ishlatish mumkin."""
+    try:
+        with open(_names_path(), encoding="utf-8") as f:
+            xarita = json.load(f)
+        return {str(k): str(v) for k, v in xarita.items() if str(v).strip()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def save_name_map(xarita):
+    try:
+        with open(_names_path(), "w", encoding="utf-8") as f:
+            json.dump(xarita, f, ensure_ascii=False, indent=2, sort_keys=True)
     except OSError:
         pass
 
@@ -1738,6 +1814,75 @@ class UnresolvedDialog(tk.Toplevel):
         return out
 
 
+class NameMapDialog(tk.Toplevel):
+    """Guruh nomlarini shu foydalanuvchi uchun qayta nomlash.
+
+    Qoidalar o'zgarmaydi — faqat hisobotga yoziladigan so'z almashadi.
+    Ya'ni tayyor mantiqni yo'qotmasdan o'z atamalaringizda ishlash
+    mumkin: masalan "МЕБ" o'rniga "товар"."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Guruh nomlarim")
+        self.geometry("560x620")
+        self.minsize(460, 400)
+        self.transient(parent)
+        self.grab_set()
+
+        self.xarita = load_name_map()
+        self.vars = {}
+
+        ttk.Label(
+            self, padding=14,
+            text=("Har bir guruh sizning hisobotingizda qanday nom bilan chiqishini "
+                  "yozing. Bo'sh qoldirsangiz, standart nom ishlatiladi."),
+            wraplength=520, justify="left", foreground="#666666",
+        ).pack(anchor="w")
+
+        canvas = tk.Canvas(self, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0), pady=(0, 10))
+        scrollbar.pack(side="left", fill="y", pady=(0, 10))
+        enable_mousewheel(self, canvas)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
+
+        footer = ttk.Frame(self, padding=12)
+        footer.pack(side="bottom", fill="x", before=canvas)
+        ttk.Button(footer, text="Saqlash", style="Accent.TButton",
+                   command=self._save).pack(side="right")
+        ttk.Button(footer, text="Yopish", command=self.destroy).pack(side="right", padx=(0, 8))
+
+        # Ro'yxatga qoidalardagi guruhlar ham, foydalanuvchi o'zi kiritgan
+        # guruhlar ham kiradi — ikkalasini ham qayta nomlash mumkin.
+        guruhlar = sorted(ai_known_groups() | set(load_all_mappings().values()))
+        for guruh in guruhlar:
+            qator = ttk.Frame(inner, padding=(6, 4))
+            qator.pack(fill="x")
+            ttk.Label(qator, text=guruh, width=22).pack(side="left")
+            ttk.Label(qator, text="->", foreground="#999999").pack(side="left", padx=(0, 8))
+            var = tk.StringVar(value=self.xarita.get(guruh, ""))
+            ttk.Entry(qator, textvariable=var, width=24).pack(side="left", fill="x", expand=True)
+            self.vars[guruh] = var
+
+    def _save(self):
+        yangi = {}
+        for guruh, var in self.vars.items():
+            nom = var.get().strip()
+            if nom and nom != guruh:
+                yangi[guruh] = nom
+        save_name_map(yangi)
+        messagebox.showinfo(
+            "Saqlandi",
+            f"{len(yangi)} ta guruh qayta nomlandi." if yangi
+            else "Barcha guruhlar standart nomda qoldi.",
+        )
+        self.destroy()
+
+
 class GroupsManagerDialog(tk.Toplevel):
     """Guruhlar (kategoriyalar) boshqaruv oynasi. Foydalanuvchi ilovani
     birinchi marta ishga tushirganda — yoki istalgan payt — ma'lum hisob
@@ -1792,6 +1937,34 @@ class GroupsManagerDialog(tk.Toplevel):
         self.new_cat_var = tk.StringVar()
         ttk.Entry(fields_row, textvariable=self.new_cat_var, width=22).pack(side="left", padx=(6, 16))
         ttk.Button(fields_row, text="+ Qo'shish", command=self._add_row).pack(side="left")
+
+        # Har bir foydalanuvchining o'z atamalari bo'lishi mumkin, shuning
+        # uchun sozlamalar aynan shu oynada — guruhlar bilan bir joyda.
+        moslash = ttk.LabelFrame(self, text="Meniki uchun moslash", padding=10)
+        moslash.pack(fill="x", padx=14, pady=(10, 0))
+
+        self.scratch_var = tk.BooleanVar(value=scratch_mode())
+        ttk.Checkbutton(
+            moslash,
+            text="Faqat o'zim kiritgan guruhlar ishlatilsin (tayyor qoidalar o'chiriladi)",
+            variable=self.scratch_var, command=self._toggle_scratch,
+        ).pack(anchor="w")
+        ttk.Label(
+            moslash,
+            text=("Yoqilsa, ilovaga oldindan yozilgan guruhlar qo'llanmaydi — har bir "
+                  "kontragent so'raladi va siz ro'yxatni o'zingiz tuzasiz. "
+                  "Tayyor qoidalar kerak, lekin nomlari boshqacha bo'lsa, "
+                  "buni yoqmasdan \"Guruh nomlarim\" dan foydalaning."),
+            wraplength=660, foreground="#666666", justify="left",
+        ).pack(anchor="w", pady=(4, 8))
+        ttk.Button(moslash, text="✎ Guruh nomlarim...", command=self._open_names).pack(anchor="w")
+
+    def _toggle_scratch(self):
+        set_scratch_mode(self.scratch_var.get())
+
+    def _open_names(self):
+        dlg = NameMapDialog(self)
+        self.wait_window(dlg)
 
         pick_row = ttk.Frame(add_box)
         pick_row.pack(fill="x", pady=(8, 0))
