@@ -311,6 +311,47 @@ def yonalishni_tekshir(core):
     return xatolar
 
 
+def oynalarni_tekshir(core):
+    """Har bir oyna ochiladimi.
+
+    Bu sinov bir haqiqiy xatodan keyin qo'shildi: interfeysga qo'shilgan
+    kod __init__ ni ikkiga bo'lib qo'ygan edi va "Guruhlarni boshqarish"
+    oynasi umuman ochilmasdi. Kod sintaksis jihatdan to'g'ri edi, testlar
+    ham o'tardi — chunki oynalarning birortasi hech qachon ochilmasdi.
+    Endi ochiladi."""
+    import tkinter as tk
+
+    xatolar = []
+    try:
+        app = core.App()
+    except Exception as e:
+        return [f"asosiy oyna ochilmadi: {e}"]
+
+    app.withdraw()
+    namuna = {"k": {"name": "TEST", "sample": "izoh", "count": 1,
+                    "account": "20208000000000000001", "inn": "", "mfo": ""}}
+    oynalar = [
+        ("Guruhlarni boshqarish", lambda: core.GroupsManagerDialog(app)),
+        ("Guruh nomlarim", lambda: core.NameMapDialog(app)),
+        ("Nomlanmagan kontragentlar", lambda: core.UnresolvedDialog(app, namuna)),
+    ]
+    try:
+        app.update()
+        for nom, yasa in oynalar:
+            try:
+                dlg = yasa()
+                dlg.update()
+                dlg.destroy()
+            except Exception as e:
+                xatolar.append(f"oyna '{nom}' ochilmadi: {type(e).__name__}: {e}")
+    finally:
+        try:
+            app.destroy()
+        except tk.TclError:
+            pass
+    return xatolar
+
+
 def main():
     import core
 
@@ -374,6 +415,7 @@ def main():
 
     xatolar += rejimlarni_tekshir(core, ish)
     xatolar += yonalishni_tekshir(core)
+    xatolar += oynalarni_tekshir(core)
 
     if xatolar:
         print("XATO:")
@@ -381,7 +423,7 @@ def main():
             print("  -", x)
         return 1
 
-    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar + yo'nalish, "
+    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar + yo'nalish + oynalar, "
           f"jami {jami_qator[0]} debet / {jami_qator[1]} kredit")
     return 0
 

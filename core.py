@@ -46,7 +46,7 @@ import sv_ttk
 
 # Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
-CORE_VERSION = "2.2.0"
+CORE_VERSION = "2.2.1"
 
 # Kodni qaysi shoxobchadan olganini launcher.py exec() dan oldin shu
 # nom bilan uzatadi. To'g'ridan-to'g'ri `python core.py` bilan ishga
@@ -2095,16 +2095,6 @@ class GroupsManagerDialog(tk.Toplevel):
 
         ttk.Button(moslash, text="✎ Guruh nomlarim...", command=self._open_names).pack(anchor="w")
 
-    def _toggle_style(self):
-        set_setting(STYLE_KEY, self.style_var.get())
-
-    def _toggle_scratch(self):
-        set_scratch_mode(self.scratch_var.get())
-
-    def _open_names(self):
-        dlg = NameMapDialog(self)
-        self.wait_window(dlg)
-
         pick_row = ttk.Frame(add_box)
         pick_row.pack(fill="x", pady=(8, 0))
         ttk.Button(pick_row, text="📄 Excel'dan tanlash...", command=self._pick_from_excel).pack(side="left")
@@ -2138,6 +2128,16 @@ class GroupsManagerDialog(tk.Toplevel):
         footer.pack(side="bottom", fill="x", before=canvas_frame)
         ttk.Button(footer, text="Saqlash", style="Accent.TButton", command=self._save).pack(side="right")
         ttk.Button(footer, text="Yopish", command=self.destroy).pack(side="right", padx=(0, 8))
+
+    def _toggle_style(self):
+        set_setting(STYLE_KEY, self.style_var.get())
+
+    def _toggle_scratch(self):
+        set_scratch_mode(self.scratch_var.get())
+
+    def _open_names(self):
+        dlg = NameMapDialog(self)
+        self.wait_window(dlg)
 
     def _render_rows(self):
         for child in self.inner.winfo_children():
