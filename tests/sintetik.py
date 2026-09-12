@@ -273,6 +273,44 @@ def rejimlarni_tekshir(core, ish):
     return xatolar
 
 
+def yonalishni_tekshir(core):
+    """Bitta kontragent chiqim va tushumda boshqa guruhga tusha oladimi.
+
+    Lug'at fayliga tegilmaydi — qoidalar to'g'ridan-to'g'ri xotiraga
+    qo'yiladi va oxirida olib tashlanadi."""
+    xatolar = []
+    hisob = "20208000900000000777"
+
+    # Kalitni kodlash/ochish juft ishlashi kerak, aks holda diskdagi
+    # yozuv keyingi ochilishda umuman tanilmaydi.
+    kalit = core.with_direction(hisob, core.DIR_CREDIT)
+    if core.split_direction(kalit) != (hisob, core.DIR_CREDIT):
+        xatolar.append(f"kalit kodlash buzuq: {kalit} -> {core.split_direction(kalit)}")
+    if core.split_direction(hisob) != (hisob, None):
+        xatolar.append("belgisiz kalit noto'g'ri o'qildi")
+
+    core.KNOWN_VENDOR_INN[hisob] = "umumiy"
+    core.KNOWN_VENDOR_INN_DIR[(hisob, core.DIR_CREDIT)] = "tushum_guruhi"
+    core.LEARNED_VENDOR_KEYS.add(hisob)
+    try:
+        chiqim = core.classify_row(1, "X", "shartnoma", "", hisob, core.DIR_DEBIT)[0]
+        tushum = core.classify_row(1, "X", "shartnoma", "", hisob, core.DIR_CREDIT)[0]
+        if chiqim != "umumiy":
+            xatolar.append(f"chiqimda '{chiqim}', 'umumiy' kutilgan")
+        if tushum != "tushum_guruhi":
+            xatolar.append(f"tushumda '{tushum}', 'tushum_guruhi' kutilgan")
+        # Yo'nalish berilmasa umumiy qoida ishlashi kerak
+        belgisiz = core.classify_row(1, "X", "shartnoma", "", hisob)[0]
+        if belgisiz != "umumiy":
+            xatolar.append(f"yo'nalishsiz '{belgisiz}', 'umumiy' kutilgan")
+    finally:
+        core.KNOWN_VENDOR_INN.pop(hisob, None)
+        core.KNOWN_VENDOR_INN_DIR.pop((hisob, core.DIR_CREDIT), None)
+        core.LEARNED_VENDOR_KEYS.discard(hisob)
+
+    return xatolar
+
+
 def main():
     import core
 
@@ -335,6 +373,7 @@ def main():
         xatolar += d_formatini_tekshir(core, ish, til)
 
     xatolar += rejimlarni_tekshir(core, ish)
+    xatolar += yonalishni_tekshir(core)
 
     if xatolar:
         print("XATO:")
@@ -342,7 +381,7 @@ def main():
             print("  -", x)
         return 1
 
-    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar, "
+    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz) + rejimlar + yo'nalish, "
           f"jami {jami_qator[0]} debet / {jami_qator[1]} kredit")
     return 0
 

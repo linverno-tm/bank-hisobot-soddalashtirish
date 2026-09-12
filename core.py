@@ -349,6 +349,38 @@ KNOWN_VENDOR_NAME = {}
 # Foydalanuvchi o'zi kiritgan ИНН/hisob kalitlari (kodga yozilganlar emas).
 LEARNED_VENDOR_KEYS = set()
 _NAME_KEY_PREFIX = "NAME::"
+
+# Bitta kontragent yo'nalishiga qarab boshqa guruhga tushishi mumkin:
+# masalan chiqimda "Авто тулов", tushumda esa butunlay boshqa nom.
+# Kalit oxiriga "@D" (debet/chiqim) yoki "@K" (kredit/tushum) qo'shiladi.
+# Belgisiz kalit avvalgidek ikkala yo'nalish uchun ishlaydi, ya'ni eski
+# yozuvlar o'zgarishsiz qolaveradi.
+DIR_DEBIT = "D"
+DIR_CREDIT = "K"
+_DIR_SEP = "@"
+KNOWN_VENDOR_INN_DIR = {}    # (kalit, yo'nalish) -> guruh
+KNOWN_VENDOR_NAME_DIR = {}   # (nom, yo'nalish) -> guruh
+KNOWN_PURPOSE_TEXT_DIR = {}  # (matn, yo'nalish) -> guruh
+
+
+def split_direction(kalit):
+    """Kalitdan yo'nalish belgisini ajratadi: ("2020...", "K")."""
+    if len(kalit) > 2 and kalit[-2] == _DIR_SEP and kalit[-1] in (DIR_DEBIT, DIR_CREDIT):
+        return kalit[:-2], kalit[-1]
+    return kalit, None
+
+
+def with_direction(kalit, yonalish):
+    return f"{kalit}{_DIR_SEP}{yonalish}" if yonalish else kalit
+
+
+def row_direction(debit, credit):
+    """Qator qaysi yo'nalishda — chiqim (debet) yoki tushum (kredit)."""
+    if debit:
+        return DIR_DEBIT
+    if credit:
+        return DIR_CREDIT
+    return None
 # Foydalanuvchi o'zi qo'shgan "to'lov maqsadi matni -> guruh" qoidalari.
 # Bitta hisob raqam orqali turli maqsaddagi to'lovlar o'tganda, ilovada
 # tayyor qoida bo'lmasa, foydalanuvchi shu yerga o'zi qoida qo'sha oladi.
@@ -393,22 +425,36 @@ def _load_persist_dict():
     except FileNotFoundError:
         raw = {}
     for k, v in raw.items():
-        if isinstance(k, str) and k.startswith(_TEXT_KEY_PREFIX):
-            KNOWN_PURPOSE_TEXT[k[len(_TEXT_KEY_PREFIX):]] = v
-        elif isinstance(k, str) and k.startswith(_NAME_KEY_PREFIX):
-            KNOWN_VENDOR_NAME[k[len(_NAME_KEY_PREFIX):]] = v
+        if not isinstance(k, str):
+            continue
+        toza, yonalish = split_direction(k)
+        if toza.startswith(_TEXT_KEY_PREFIX):
+            matn = toza[len(_TEXT_KEY_PREFIX):]
+            if yonalish:
+                KNOWN_PURPOSE_TEXT_DIR[(matn, yonalish)] = v
+            else:
+                KNOWN_PURPOSE_TEXT[matn] = v
+        elif toza.startswith(_NAME_KEY_PREFIX):
+            nomi = toza[len(_NAME_KEY_PREFIX):]
+            if yonalish:
+                KNOWN_VENDOR_NAME_DIR[(nomi, yonalish)] = v
+            else:
+                KNOWN_VENDOR_NAME[nomi] = v
         else:
-            KNOWN_VENDOR_INN[k] = v
+            if yonalish:
+                KNOWN_VENDOR_INN_DIR[(toza, yonalish)] = v
+            else:
+                KNOWN_VENDOR_INN[toza] = v
             # Kodga yozilganlardan ajratib qo'yamiz: "noldan boshlash"
             # rejimida faqat foydalanuvchi o'zi kiritganlari ishlaydi.
-            LEARNED_VENDOR_KEYS.add(k)
+            LEARNED_VENDOR_KEYS.add(toza)
 
 
 _migrate_legacy_groups()
 _load_persist_dict()
 
 
-def save_learned_category(identifier, name, category):
+def save_learned_category(identifier, name, category, yonalish=None):
     """Persist a user-supplied category for a previously-unresolved ("?")
     counterparty, so future reports auto-classify it. Keyed by Xisob raqam
     (Счет) when available (most reliable, and stable per counterparty);
@@ -427,14 +473,24 @@ def save_learned_category(identifier, name, category):
         raw = {}
     if identifier.startswith(_TEXT_KEY_PREFIX):
         phrase = identifier[len(_TEXT_KEY_PREFIX):]
-        raw[identifier] = category
-        KNOWN_PURPOSE_TEXT[phrase] = category
+        raw[with_direction(identifier, yonalish)] = category
+        if yonalish:
+            KNOWN_PURPOSE_TEXT_DIR[(phrase, yonalish)] = category
+        else:
+            KNOWN_PURPOSE_TEXT[phrase] = category
     elif identifier:
-        raw[identifier] = category
-        KNOWN_VENDOR_INN[identifier] = category
+        raw[with_direction(identifier, yonalish)] = category
+        if yonalish:
+            KNOWN_VENDOR_INN_DIR[(identifier, yonalish)] = category
+        else:
+            KNOWN_VENDOR_INN[identifier] = category
+        LEARNED_VENDOR_KEYS.add(identifier)
     else:
-        raw[f"{_NAME_KEY_PREFIX}{name}"] = category
-        KNOWN_VENDOR_NAME[name] = category
+        raw[with_direction(f"{_NAME_KEY_PREFIX}{name}", yonalish)] = category
+        if yonalish:
+            KNOWN_VENDOR_NAME_DIR[(name, yonalish)] = category
+        else:
+            KNOWN_VENDOR_NAME[name] = category
     with open(_DICT_PATH, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -502,7 +558,10 @@ def find_unresolved(rows):
     for the caller to ask the user about before generating the report."""
     unresolved = {}
     for r in rows:
-        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        cat, conf = classify_row(
+            r["op"], r["name"], r["purpose"], r["inn"], r["account"],
+            row_direction(r["debit"], r["credit"]),
+        )
         if conf != "review":
             continue
         account = str(r["account"]).strip() if r["account"] else ""
@@ -528,7 +587,7 @@ def find_unresolved(rows):
     return unresolved
 
 
-def classify_row(op, name, text, inn, account=None):
+def classify_row(op, name, text, inn, account=None, yonalish=None):
     """Classify a SINGLE row by its own text/name/Xisob raqam. Never looks
     at other rows sharing the same raw account number.
 
@@ -569,6 +628,12 @@ def classify_row(op, name, text, inn, account=None):
     # turadi, chunki ular aynan shunday "bitta hisob raqam, ko'p maqsad"
     # holatlarini qo'lda ajratish uchun kiritilgan.
     text_low = text.lower()
+    # Yo'nalishga bog'langan qoida umumiysidan ustun turadi: u aniqroq
+    # holat uchun yozilgan.
+    if yonalish:
+        for (phrase, yon), cat in KNOWN_PURPOSE_TEXT_DIR.items():
+            if yon == yonalish and phrase.lower() in text_low:
+                return cat, "high"
     for phrase, cat in KNOWN_PURPOSE_TEXT.items():
         if phrase.lower() in text_low:
             return cat, "high"
@@ -582,6 +647,15 @@ def classify_row(op, name, text, inn, account=None):
 
     account = account_str
     inn = str(inn).strip() if inn else ""
+    name_key = name.strip()
+
+    if yonalish:
+        for kalit in (account, inn):
+            if kalit and (kalit, yonalish) in KNOWN_VENDOR_INN_DIR:
+                return KNOWN_VENDOR_INN_DIR[(kalit, yonalish)], "high"
+        if (name_key, yonalish) in KNOWN_VENDOR_NAME_DIR:
+            return KNOWN_VENDOR_NAME_DIR[(name_key, yonalish)], "high"
+
     for kalit in (account, inn):
         if not kalit or kalit not in KNOWN_VENDOR_INN:
             continue
@@ -589,7 +663,6 @@ def classify_row(op, name, text, inn, account=None):
             continue  # kodga yozilgan kontragent — bu rejimda hisobga olinmaydi
         return KNOWN_VENDOR_INN[kalit], "high"
 
-    name_key = name.strip()
     if name_key in KNOWN_VENDOR_NAME:
         return KNOWN_VENDOR_NAME[name_key], "high"
 
@@ -965,7 +1038,10 @@ def build_simplified_report(src_path, out_path):
 
     results = []  # (row_dict, category, confidence)
     for r in rows:
-        cat, conf = classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
+        cat, conf = classify_row(
+            r["op"], r["name"], r["purpose"], r["inn"], r["account"],
+            row_direction(r["debit"], r["credit"]),
+        )
         cat = nomlar.get(cat, cat)
         results.append((r, cat, conf))
         by_account[r["account"]].add(cat)
@@ -1971,6 +2047,19 @@ class GroupsManagerDialog(tk.Toplevel):
         ttk.Entry(fields_row, textvariable=self.new_cat_var, width=22).pack(side="left", padx=(6, 16))
         ttk.Button(fields_row, text="+ Qo'shish", command=self._add_row).pack(side="left")
 
+        # Bitta kontragent yo'nalishiga qarab boshqa guruhga tushishi
+        # mumkin — masalan chiqimda to'lov, tushumda esa boshqa narsa.
+        dir_row = ttk.Frame(add_box)
+        dir_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(dir_row, text="Qaysi holatda:").pack(side="left")
+        self.new_dir = tk.StringVar(value="")
+        ttk.Radiobutton(dir_row, text="Har doim", variable=self.new_dir,
+                        value="").pack(side="left", padx=(8, 0))
+        ttk.Radiobutton(dir_row, text="Faqat chiqimda (дебет)", variable=self.new_dir,
+                        value=DIR_DEBIT).pack(side="left", padx=(12, 0))
+        ttk.Radiobutton(dir_row, text="Faqat tushumda (кредит)", variable=self.new_dir,
+                        value=DIR_CREDIT).pack(side="left", padx=(12, 0))
+
         # Har bir foydalanuvchining o'z atamalari bo'lishi mumkin, shuning
         # uchun sozlamalar aynan shu oynada — guruhlar bilan bir joyda.
         moslash = ttk.LabelFrame(self, text="Meniki uchun moslash", padding=10)
@@ -2056,19 +2145,25 @@ class GroupsManagerDialog(tk.Toplevel):
             self._add_row_widget(key, cat)
 
     def _add_row_widget(self, key, category):
-        if key.startswith(_TEXT_KEY_PREFIX):
-            display_id = key[len(_TEXT_KEY_PREFIX):]
+        toza, yonalish = split_direction(key)
+        if toza.startswith(_TEXT_KEY_PREFIX):
+            display_id = toza[len(_TEXT_KEY_PREFIX):]
             label_prefix = "Matn: "
-        elif key.startswith(_NAME_KEY_PREFIX):
-            display_id = key[len(_NAME_KEY_PREFIX):]
+        elif toza.startswith(_NAME_KEY_PREFIX):
+            display_id = toza[len(_NAME_KEY_PREFIX):]
             label_prefix = "Nomi: "
         else:
-            display_id = key
+            display_id = toza
             label_prefix = "Xisob raqam: "
 
         row = ttk.Frame(self.inner, padding=6, relief="groove", borderwidth=1)
         row.pack(fill="x", pady=3)
         ttk.Label(row, text=f"{label_prefix}{display_id}", width=32, anchor="w").pack(side="left")
+        if yonalish:
+            ttk.Label(
+                row, foreground="#0a66c2",
+                text="chiqimda" if yonalish == DIR_DEBIT else "tushumda",
+            ).pack(side="left", padx=(0, 6))
         cat_var = tk.StringVar(value=category)
         ttk.Entry(row, textvariable=cat_var, width=22).pack(side="left", padx=(6, 6))
         ttk.Button(row, text="Saqlash", command=lambda k=key, v=cat_var: self._update_row(k, v)).pack(side="left")
@@ -2126,6 +2221,7 @@ class GroupsManagerDialog(tk.Toplevel):
             key = f"{_TEXT_KEY_PREFIX}{ident}"
         else:
             key = f"{_NAME_KEY_PREFIX}{ident}"
+        key = with_direction(key, self.new_dir.get())
         self.mapping[key] = cat
         save_all_mappings(self.mapping)
         self.new_id_var.set("")
