@@ -251,6 +251,25 @@ def rejimlarni_tekshir(core, ish):
         core.set_scratch_mode(eski_rejim)
         core.save_name_map(eski_nomlar)
 
+    # 3) Sarlavhali ko'rinish
+    eski_uslub = core.titled_style()
+    try:
+        core.set_setting(core.STYLE_KEY, True)
+        out = os.path.join(ish, "uslub.xlsx")
+        core.build_simplified_report(xom, out)
+        ws = openpyxl.load_workbook(out)["Лист1"]
+        if "A1:D1" not in {str(r) for r in ws.merged_cells.ranges}:
+            xatolar.append("sarlavhali ko'rinish: yuqoridagi sarlavha birlashtirilmagan")
+        if ws["B2"].value != "Колдик":
+            xatolar.append(f"sarlavhali ko'rinish: B2 '{ws['B2'].value}', 'Колдик' kutilgan")
+        rang = ws["B3"].font.color
+        if not (rang and getattr(rang, "rgb", None) == "FFFF0000"):
+            xatolar.append("sarlavhali ko'rinish: sarlavha qatori qizil emas")
+        if ws["A1"].font.size != 16:
+            xatolar.append(f"sarlavhali ko'rinish: sarlavha o'lchami {ws['A1'].font.size}")
+    finally:
+        core.set_setting(core.STYLE_KEY, eski_uslub)
+
     return xatolar
 
 

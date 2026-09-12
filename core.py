@@ -35,7 +35,7 @@ from decimal import Decimal
 
 import openpyxl
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Border, Font, Side
+from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 
 import tkinter as tk
@@ -1004,7 +1004,18 @@ def build_simplified_report(src_path, out_path):
     # ishlatiladi, chunki fayl tanlash oynasi yo'lni "/" bilan qaytaradi va
     # oldingi "\\" bo'yicha ajratish butun yo'lni sarlavhaga yozib qo'yardi.
     title = os.path.splitext(os.path.basename(src_path))[0]
-    summary["B2"] = title
+    sarlavhali = titled_style()
+    if sarlavhali:
+        # Fayl nomi yuqorida alohida sarlavha bo'lib turadi, 2-qatorda
+        # esa uning o'rniga qoldiq yozuvi qoladi. Pastki chiziqlar
+        # bo'shliqqa aylantiriladi: fayl nomida ular ko'p uchraydi.
+        summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+        bosh = summary.cell(row=1, column=1, value=title.replace("_", " "))
+        bosh.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        summary.row_dimensions[1].height = 40
+        summary["B2"] = "Колдик"
+    else:
+        summary["B2"] = title
     summary["B2"].font = Font(bold=True)
     if open_bal is not None:
         summary["C2"] = float(open_bal)
@@ -1015,11 +1026,15 @@ def build_simplified_report(src_path, out_path):
         summary[col].border = border
         summary[col].number_format = acc_fmt
 
+    qizil = Font(color="FFFF0000", bold=True)
+
     headers = ["№", "Названия строк", " Дебет", " Кредит"]
     for i, h in enumerate(headers):
         c = summary.cell(row=3, column=1 + i, value=h)
         c.border = border
         c.number_format = acc_fmt
+        if sarlavhali:
+            c.font = qizil
 
     row_i = 4
     total_debet = Decimal(0)
@@ -1052,6 +1067,9 @@ def build_simplified_report(src_path, out_path):
     c.number_format = acc_fmt
     c.border = border
     summary.cell(row=row_i, column=1).border = border
+    if sarlavhali:
+        for col in (1, 2, 3, 4):
+            summary.cell(row=row_i, column=col).font = qizil
 
     summary.column_dimensions["A"].width = 5.2
     summary.column_dimensions["B"].width = 24
@@ -1072,6 +1090,11 @@ def build_simplified_report(src_path, out_path):
                     underline=old.underline,
                     color=old.color,
                 )
+
+    if sarlavhali:
+        # Yuqoridagi tenglashtirish hamma katakni 14 o'lchamga keltiradi;
+        # sarlavha undan keyin kattalashtiriladi, aks holda yo'qolardi.
+        summary["A1"].font = Font(name=FONT_NAME, size=16, bold=True)
 
     wb.save(out_path)
 
@@ -1234,7 +1257,17 @@ def set_setting(nom, qiymat):
 
 
 SCRATCH_KEY = "faqat_ozim"
+STYLE_KEY = "sarlavhali_korinish"
 NAMES_FILE = "nomlar.json"
+
+
+def titled_style():
+    """Hisobot yuqorisida sarlavha, "Колдик" qatori va qizil yig'indi.
+
+    Foydalanuvchilar hisobotni turlicha ko'rishni xohlashadi, shuning
+    uchun bu tanlov — standart holatda o'chiq, ya'ni mavjud
+    foydalanuvchilarning odatlangan ko'rinishi o'zgarmaydi."""
+    return bool(get_setting(STYLE_KEY, False))
 
 
 _SCRATCH_CACHE = None
@@ -1957,7 +1990,17 @@ class GroupsManagerDialog(tk.Toplevel):
                   "buni yoqmasdan \"Guruh nomlarim\" dan foydalaning."),
             wraplength=660, foreground="#666666", justify="left",
         ).pack(anchor="w", pady=(4, 8))
+        self.style_var = tk.BooleanVar(value=titled_style())
+        ttk.Checkbutton(
+            moslash,
+            text="Hisobot yuqorisida sarlavha va qizil yig'indi bo'lsin",
+            variable=self.style_var, command=self._toggle_style,
+        ).pack(anchor="w", pady=(0, 8))
+
         ttk.Button(moslash, text="✎ Guruh nomlarim...", command=self._open_names).pack(anchor="w")
+
+    def _toggle_style(self):
+        set_setting(STYLE_KEY, self.style_var.get())
 
     def _toggle_scratch(self):
         set_scratch_mode(self.scratch_var.get())
