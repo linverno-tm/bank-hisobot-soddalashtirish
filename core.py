@@ -619,20 +619,25 @@ def propose_category_for_group(op_values, names, texts, inns, accounts=None):
 #      (bizning hisobimiz) va korrespondent (kontragent). Bizga faqat
 #      korrespondent kerak, shuning uchun "ИНН клиента" kabi nomlar
 #      ataylab ro'yxatga kiritilmagan: ular hech qanday maydonga
-#      tushmaydi va e'tiborsiz qoladi.
+#      tushmaydi va e'tiborsiz qoladi. Bank interfeysi tiliga qarab shu
+#      formatning o'zbekcha kirill ko'rinishi ham keladi ("Сана",
+#      "Номи корреспондент", "СТИР", "Ҳисоб", "Тўлов мақсади") —
+#      ustun nomlari boshqa, tuzilishi bir xil.
 # Shu tarzda kelajakda yana bir variant chiqsa ham kod ishlayveradi.
 _COLUMN_ALIASES = {
-    "date": ("дата проводки", "дата"),
-    "account": ("счет корреспондента", "счет корресп.", "счет"),
-    "inn": ("инн корреспондента", "инн"),
+    "date": ("дата проводки", "дата", "сана"),
+    "account": ("счет корреспондента", "счет корресп.", "счет",
+                "ҳисоб корреспондент"),
+    "inn": ("инн корреспондента", "инн", "стир корреспондент"),
     "name": ("наименование корреспондента", "наименование корресп.",
-             "наименование корресп", "наименование"),
-    "doc_no": ("№ док-та", "номер документа", "№ док"),
+             "наименование корресп", "наименование", "номи корреспондент"),
+    "doc_no": ("№ док-та", "номер документа", "№ док", "№ ҳуж-та"),
     "op": ("во", "оп"),
-    "mfo": ("мфо корреспондента", "мфо корресп.", "мфо корресп", "мфо"),
-    "debit": ("сумма дебета", "оборот дебет", "дебет"),
-    "credit": ("сумма кредита", "оборот кредит", "кредит"),
-    "purpose": ("назначение платежа", "детали"),
+    "mfo": ("мфо корреспондента", "мфо корресп.", "мфо корресп", "мфо",
+            "мфо корреспондент"),
+    "debit": ("сумма дебета", "оборот дебет", "дебет", "дебет суммаси"),
+    "credit": ("сумма кредита", "оборот кредит", "кредит", "кредит суммаси"),
+    "purpose": ("назначение платежа", "детали", "тўлов мақсади"),
 }
 
 
@@ -862,8 +867,10 @@ def _writable_cell(ws, row, col):
 #   "Исходящий остаток на 31.08.2026"          -> raqam ALOHIDA katakda
 # Ustun/qator raqamiga tayanib bo'lmaydi (A4, B4, F4, H25 ... hammasi
 # uchraydi), shuning uchun kalit ibora bo'yicha qatorni topamiz.
-_OPEN_BALANCE_WORDS = ("входящий остаток", "остаток на начало", "начальный остаток")
-_CLOSE_BALANCE_WORDS = ("исходящий остаток", "остаток на конец", "конечный остаток")
+_OPEN_BALANCE_WORDS = ("входящий остаток", "остаток на начало", "начальный остаток",
+                       "давр бошидаги қолдиқ")
+_CLOSE_BALANCE_WORDS = ("исходящий остаток", "остаток на конец", "конечный остаток",
+                        "давр охиридаги қолдиқ")
 
 
 def _parse_balance_number(text):

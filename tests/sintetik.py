@@ -96,7 +96,35 @@ D_QATORLAR = [
 ]
 
 
-def namuna_d_yasash(yol):
+# Bir xil formatning ikki tili. Bank interfeysi qaysi tilda bo'lsa,
+# hisobot ham o'sha tilda keladi — ustun nomlari boshqa, tuzilishi bir xil.
+D_SARLAVHALAR = {
+    "ru": {
+        2: "№", 3: "№ Док-та", 4: "ВО", 5: "Дата",
+        6: "Наименование клиента", 7: "ИНН клиента",
+        8: "Счёт клиента", 9: "МФО клиента",
+        10: "Сумма дебета", 11: "Сумма кредита",
+        12: "Наименование корреспондента", 13: "ИНН корреспондента",
+        14: "Счёт корреспондента", 15: "МФО корреспондента",
+        16: "Назначение платежа",
+        "bosh": "Остаток на начало периода Пассив",
+        "oxir": "Остаток на конец периода Пассив",
+    },
+    "uz": {
+        2: "№", 3: "№ Ҳуж-та", 4: "ВО", 5: "Сана",
+        6: "Номи мижоз", 7: "СТИР мижоз",
+        8: "Ҳисоб мижоз", 9: "МФО мижоз",
+        10: "Дебет суммаси", 11: "Кредит суммаси",
+        12: "Номи корреспондент", 13: "СТИР корреспондент",
+        14: "Ҳисоб корреспондент", 15: "МФО корреспондент",
+        16: "Тўлов мақсади",
+        "bosh": "Давр бошидаги қолдиқ Пассив",
+        "oxir": "Давр охиридаги қолдиқ Пассив",
+    },
+}
+
+
+def namuna_d_yasash(yol, til="ru"):
     """D formatidagi namuna. Mijoz ustunlari ataylab boshqa qiymat bilan
     to'ldiriladi: kod kontragentni emas, bizning firmani o'qib qo'ysa,
     sinov darhol yiqiladi."""
@@ -114,20 +142,13 @@ def namuna_d_yasash(yol):
 
     debet = sum(q[3] for q in D_QATORLAR)
     kredit = sum(q[4] for q in D_QATORLAR)
-    ws.cell(6, 2, "Остаток на начало периода Пассив")
+    sarlavhalar = D_SARLAVHALAR[til]
+    ws.cell(6, 2, sarlavhalar["bosh"])
     ws.cell(6, 6, 1000)
 
-    sarlavhalar = {
-        2: "№", 3: "№ Док-та", 4: "ВО", 5: "Дата",
-        6: "Наименование клиента", 7: "ИНН клиента",
-        8: "Счёт клиента", 9: "МФО клиента",
-        10: "Сумма дебета", 11: "Сумма кредита",
-        12: "Наименование корреспондента", 13: "ИНН корреспондента",
-        14: "Счёт корреспондента", 15: "МФО корреспондента",
-        16: "Назначение платежа",
-    }
     for c, nom in sarlavhalar.items():
-        ws.cell(7, c, nom)
+        if isinstance(c, int):
+            ws.cell(7, c, nom)
 
     for n, (nomi, inn, hisob, deb, kred, izoh, _kut) in enumerate(D_QATORLAR):
         r = 8 + n
@@ -148,38 +169,38 @@ def namuna_d_yasash(yol):
         ws.cell(r, 16, izoh)
 
     oxir = 8 + len(D_QATORLAR)
-    ws.cell(oxir, 2, "Остаток на конец периода Пассив")
+    ws.cell(oxir, 2, sarlavhalar["oxir"])
     ws.cell(oxir, 6, 1000 + kredit - debet)
     wb.save(yol)
 
 
-def d_formatini_tekshir(core, ish):
+def d_formatini_tekshir(core, ish, til="ru"):
     """D formati o'qiladimi, kontragent ustunlari to'g'ri tanlanadimi."""
     xatolar = []
-    xom = os.path.join(ish, "sinov_d.xlsx")
-    namuna_d_yasash(xom)
+    xom = os.path.join(ish, f"sinov_d_{til}.xlsx")
+    namuna_d_yasash(xom, til)
 
     wb, ws, layout, rows = core.load_raw_rows(xom)
     if len(rows) != len(D_QATORLAR):
-        xatolar.append(f"D formati: {len(rows)} qator o'qildi, {len(D_QATORLAR)} kutilgan")
+        xatolar.append(f"D/{til}: {len(rows)} qator o'qildi, {len(D_QATORLAR)} kutilgan")
         return xatolar
 
     for r, (nomi, inn, hisob, _d, _k, _izoh, kutilgan) in zip(rows, D_QATORLAR):
         # Mijoz emas, korrespondent ustunlari olinganini tekshiramiz.
         if r["name"] != nomi:
-            xatolar.append(f"D formati: nom '{r['name']}' o'qildi, '{nomi}' kutilgan")
+            xatolar.append(f"D/{til}: nom '{r['name']}' o'qildi, '{nomi}' kutilgan")
         if str(r["inn"]) != inn:
-            xatolar.append(f"D formati: ИНН '{r['inn']}' o'qildi, '{inn}' kutilgan")
+            xatolar.append(f"D/{til}: ИНН '{r['inn']}' o'qildi, '{inn}' kutilgan")
         if str(r["account"]) != hisob:
-            xatolar.append(f"D formati: hisob '{r['account']}' o'qildi, '{hisob}' kutilgan")
+            xatolar.append(f"D/{til}: hisob '{r['account']}' o'qildi, '{hisob}' kutilgan")
         guruh, _ = core.classify_row(r["op"], r["name"], r["purpose"], r["inn"], r["account"])
         if guruh != kutilgan:
-            xatolar.append(f"D formati: {nomi} -> '{guruh}', '{kutilgan}' kutilgan edi")
+            xatolar.append(f"D/{til}: {nomi} -> '{guruh}', '{kutilgan}' kutilgan edi")
 
-    natija = os.path.join(ish, "natija_d.xlsx")
+    natija = os.path.join(ish, f"natija_d_{til}.xlsx")
     info = core.build_simplified_report(xom, natija)
     if info.get("balans_farqi") != Decimal(0):
-        xatolar.append(f"D formati: balans farqi {info.get('balans_farqi')}")
+        xatolar.append(f"D/{til}: balans farqi {info.get('balans_farqi')}")
     return xatolar
 
 
@@ -241,7 +262,8 @@ def main():
     if info.get("balans_farqi") != Decimal(0):
         xatolar.append(f"balans nazorati: farq {info.get('balans_farqi')}, 0 kutilgan edi")
 
-    xatolar += d_formatini_tekshir(core, ish)
+    for til in ("ru", "uz"):
+        xatolar += d_formatini_tekshir(core, ish, til)
 
     if xatolar:
         print("XATO:")
@@ -249,7 +271,7 @@ def main():
             print("  -", x)
         return 1
 
-    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator, "
+    print(f"[OK] sintetik sinov: {len(QATORLAR)} qator + D formati (ru, uz), "
           f"jami {jami_qator[0]} debet / {jami_qator[1]} kredit")
     return 0
 
