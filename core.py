@@ -46,7 +46,7 @@ import sv_ttk
 
 # Ilovaning joriy versiyasi. Launcher .exe o'zgarmaydi, shuning uchun
 # foydalanuvchi ko'radigan versiya aynan shu fayldan olinadi.
-CORE_VERSION = "2.1.0"
+CORE_VERSION = "2.2.0"
 
 # Kodni qaysi shoxobchadan olganini launcher.py exec() dan oldin shu
 # nom bilan uzatadi. To'g'ridan-to'g'ri `python core.py` bilan ishga
@@ -1706,6 +1706,13 @@ class UnresolvedDialog(tk.Toplevel):
 
         header = ttk.Frame(self, padding=10)
         header.pack(fill="x")
+        if scratch_mode():
+            ttk.Label(
+                header, foreground="#c62828", wraplength=1000, justify="left",
+                text=("\"Faqat o'zim kiritgan guruhlar\" rejimi yoqilgan - shuning uchun "
+                      "tayyor guruhlar ishlamayapti va deyarli hamma kontragent "
+                      "so'ralyapti. Guruhlarni boshqarish oynasidan o'chirsa bo'ladi."),
+            ).pack(anchor="w", pady=(0, 8))
         ttk.Label(
             header,
             text=(
@@ -2386,6 +2393,14 @@ class App(tk.Tk):
             f"Versiya v{CORE_VERSION}  |  Shoxobcha: {SOURCE_BRANCH}"
             f"  |  Joylashuvi: {os.path.abspath(sys.executable)}"
         )
+        # Bu rejim tayyor qoidalarning hammasini o'chiradi. Jimgina
+        # yoqilib qolsa "ilova hech narsani tanimay qoldi" degan
+        # tushunmovchilik chiqadi, shuning uchun har ochilishda aytamiz.
+        if scratch_mode():
+            self._log(
+                "DIQQAT: \"Faqat o'zim kiritgan guruhlar\" rejimi YOQILGAN - "
+                "tayyor qoidalar ishlamaydi. O'chirish: Guruhlarni boshqarish."
+            )
         self.after(100, self._poll_queue)
         threading.Thread(target=send_ping, daemon=True).start()
 
